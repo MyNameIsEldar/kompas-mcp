@@ -277,3 +277,45 @@ def screenshot(hwnd: int | None = None, max_px: int = 1600) -> bytes:
     buf = io.BytesIO()
     img.save(buf, "PNG")
     return buf.getvalue()
+
+
+# --- Шрифты ------------------------------------------------------------------
+_glyph_cache: dict[tuple[str, str], bool] = {}
+
+
+def missing_glyphs(font: str, text: str) -> str:
+    """Символы text, которых нет в шрифте font (по таблице глифов GDI, без подстановки из других шрифтов)."""
+    from ctypes import wintypes
+    chars = [c for c in dict.fromkeys(text) if c not in "\r\n\t" and (font, c) not in _glyph_cache]
+    if chars:
+        gdi, user = ctypes.windll.gdi32, ctypes.windll.user32
+        gdi.CreateFontW.restype = wintypes.HFONT
+        gdi.CreateFontW.argtypes = [ctypes.c_int] * 5 + [wintypes.DWORD] * 8 + [wintypes.LPCWSTR]
+        gdi.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+        gdi.SelectObject.restype = wintypes.HGDIOBJ
+        gdi.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+        gdi.GetGlyphIndicesW.argtypes = [wintypes.HDC, wintypes.LPCWSTR, ctypes.c_int,
+                                         ctypes.POINTER(wintypes.WORD), wintypes.DWORD]
+        gdi.GetTextFaceW.argtypes = [wintypes.HDC, ctypes.c_int, wintypes.LPWSTR]
+        user.GetDC.restype = wintypes.HDC
+        user.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+        hdc = user.GetDC(None)
+        hf = gdi.CreateFontW(-20, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 0, 0, font)  # 1 — DEFAULT_CHARSET
+        old = gdi.SelectObject(hdc, hf)
+        try:
+            face = ctypes.create_unicode_buffer(64)
+            gdi.GetTextFaceW(hdc, 64, face)
+            if face.value.lower() != font.lower():
+                return ""  # шрифта нет в системе — проверить нечем, не мешаем
+            s = "".join(c for c in chars if ord(c) <= 0xFFFF)
+            buf = (wintypes.WORD * len(s))()
+            gdi.GetGlyphIndicesW(hdc, s, len(s), buf, 1)  # 1 — GGI_MARK_NONEXISTING_GLYPHS
+            for c, g in zip(s, buf):
+                _glyph_cache[(font, c)] = g != 0xFFFF
+            for c in chars:
+                _glyph_cache.setdefault((font, c), False)
+        finally:
+            gdi.SelectObject(hdc, old)
+            gdi.DeleteObject(hf)
+            user.ReleaseDC(None, hdc)
+    return "".join(c for c in dict.fromkeys(text) if c not in "\r\n\t" and not _glyph_cache[(font, c)])

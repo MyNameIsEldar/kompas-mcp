@@ -166,6 +166,7 @@ class Kompas:
         self.API7, self.API5 = API7, API5
         self._app7 = None
         self._app5 = None
+        self._pinned = None
 
     # подключение / автозапуск
     def _attach(self) -> bool:
@@ -237,8 +238,29 @@ class Kompas:
         docs = self.app7.Documents
         return [self.doc_info(docs.Item(i), i) for i in range(docs.Count)]
 
+    @contextlib.contextmanager
+    def pinned(self, d):
+        """На время блока «активный документ» — это d, даже если пользователь или другой клиент
+        переключит окно в КОМПАСе: длинная сборка не должна дорисоваться в чужой документ."""
+        prev, self._pinned = self._pinned, d
+        try:
+            yield d
+        finally:
+            self._pinned = prev
+
+    def doc5(self, d=None):
+        """Документ API5 (ksDocument2D) именно для d, а не для того, что сейчас активно."""
+        d = d or self.resolve_doc()
+        doc5 = self.app5.ksGetDocumentByReference(d.Reference)
+        if doc5 is None:
+            self.activate(d)
+            doc5 = self.app5.ActiveDocument2D()
+        return doc5
+
     def resolve_doc(self, spec: str | int | None = None):
         app = self.app7
+        if (spec is None or spec == "") and self._pinned is not None:
+            return self._pinned
         if spec is None or spec == "":
             d = app.ActiveDocument
             if d is None:

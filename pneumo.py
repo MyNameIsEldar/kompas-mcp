@@ -556,7 +556,7 @@ def place(k: Kompas, items: list[dict], view_number: int | None = None, unit: fl
         v.Update()
     u_def, label_h_def = default_unit(k)
     u0 = float(unit or u_def)
-    doc5 = k.app5.ActiveDocument2D()
+    doc5 = k.doc5(d)
     results = []
     for n, it in enumerate(items):
         name = it.get("symbol")
@@ -663,7 +663,7 @@ def pipes(k: Kompas, items: list[dict], view_number: int | None = None) -> list[
         v.Update()
     _, label_h = default_unit(k)
     u, _ = default_unit(k)
-    doc5 = k.app5.ActiveDocument2D()
+    doc5 = k.doc5(d)
     out = []
     for n, it in enumerate(items):
         pts = it.get("points") or []
