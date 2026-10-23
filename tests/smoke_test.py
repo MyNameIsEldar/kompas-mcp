@@ -17,7 +17,7 @@ os.makedirs(OUT, exist_ok=True)
 import server  # noqa: E402
 
 
-async def call(name, **args):
+async def call(name, /, **args):  # name позиционный: у инструментов бывает аргумент name
     res = await server.mcp.call_tool(name, args)
     content = getattr(res, "content", res)
     if isinstance(content, tuple):

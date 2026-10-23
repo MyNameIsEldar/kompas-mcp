@@ -3,3 +3,4 @@ pywin32>=306
 pillow>=10
 pydantic>=2
 comtypes>=1.4
+openpyxl>=3.1

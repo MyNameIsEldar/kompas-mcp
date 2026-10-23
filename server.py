@@ -23,7 +23,9 @@ from mcp.server.mcpserver.exceptions import ToolError
 import drawing2d
 import model3d
 import pneumo
+import scene
 import scheme
+import tables
 import winutil
 from kompas_com import DOC_TYPES, ComWorker, Kompas, KompasError, _kompas_exe
 
@@ -65,6 +67,11 @@ kompas_symbols_catalog; на A1 модуль 5 мм выбирается сам)
 из ответа вставки, kind — среда (gas, oil, drain, vent, impulse, control…). Поток слева направо; обратный
 клапан в такой линии — rotate=180. Легенда — kompas_legend (только то, что есть на листе); перед сдачей листа —
 kompas_check_sheet и kompas_preview(region=...) по каждой найденной проблеме.
+
+Большой лист (схема на A1) держите в файле сцены и собирайте kompas_build: каждый раздел — свой слой
+(«МКУ-1», «Узел входа», «КИП»), правка раздела = правка файла + kompas_build(sections=[...]).
+Перечень элементов, таблицу КИП и таблицы из xlsx/CSV рисует kompas_table; слои — kompas_layers.
+Текст: align, line_step, width_factor/max_width; на предупреждения о символах вне шрифта отвечайте заменой.
 
 3D (kompas_3d_feature): первая операция mode="add" создаёт тело, далее add — приклеить, cut — вырезать.
 direction="normal" — вдоль нормали плоскости (для XOY это +Z). Для вращения в эскизе нужна ось style="axial".
@@ -319,12 +326,41 @@ _DRAW_DOC = """Элементы (координаты в мм вида; style �
 - {"type":"rect","x":0,"y":0,"w":100,"h":60,"angle":0}  (x,y — левый нижний угол)
 - {"type":"polyline","points":[[0,0],[10,0],[10,10]],"closed":false}
 - {"type":"point","x":10,"y":10}
-- {"type":"text","x":20,"y":30,"text":"Надпись","height":5,"angle":0,"align":0}"""
+- {"type":"text","x":20,"y":30,"text":"Строка 1\nСтрока 2","height":5,"align":"left|center|right",
+   "line_step":8,"width_factor":0.8,"max_width":60,"angle":0,"fix_glyphs":false}
+  align — выравнивание относительно точки x и строк между собой; line_step — шаг строк, мм;
+  width_factor — сужение (1 — обычный); max_width — сузить автоматически, чтобы влезть в ширину, мм.
+  Индексы: «м^{3}», «CO_{2}». Символы, которых нет в шрифте чертежа (≤, ≈, ¹, ₂…), дают предупреждение
+  в ответе с заменой; fix_glyphs: true — заменить сразу.
+layer — имя слоя (создаётся сам): объекты попадут на него, раздел потом очищается kompas_layers(action="clear")."""
+
+_LAYER = Annotated[str | None, Field(description="Слой по имени (например «КИП», «МКУ-1»); создаётся при необходимости")]
+_DOC = Annotated[str | None, Field(description="Документ (имя, путь или индекс); по умолчанию активный")]
+
+
+def _require_doc(document: str | None, what: str) -> None:
+    # Всё, что удаляет объекты, работает только в явно названном документе: «активный» мог переключить
+    # пользователь или другая сессия — однажды так очистка стёрла объекты в открытом чертеже пользователя.
+    if not document:
+        raise KompasError(f"{what} удаляет объекты — укажите document (имя, путь или индекс из kompas_status).")
+
+
+def _in_doc(document: str | None, fn, destructive: str | None = None):
+    """Выполнить fn с закреплённым документом: переключение окна в КОМПАСе посреди операции
+    (пользователем или другим клиентом) не уведёт построения в чужой документ."""
+    def run():
+        if destructive:
+            _require_doc(document, destructive)
+        k = K()
+        with k.pinned(k.resolve_doc(document)):
+            return fn(k)
+    return run
 
 
 @mcp.tool(description="Нарисовать 2D-геометрию в активном (или указанном) виде чертежа/фрагмента.\n" + _DRAW_DOC)
-async def kompas_draw(items: list[dict], view: Annotated[int | None, Field(description="Номер вида")] = None) -> str:
-    return _json(await com(lambda: drawing2d.draw(K(), items, view), "draw"))
+async def kompas_draw(items: list[dict], view: Annotated[int | None, Field(description="Номер вида")] = None,
+                      layer: _LAYER = None) -> str:
+    return _json(await com(_in_doc(None, lambda k: drawing2d.draw(k, items, view, layer)), "draw"))
 
 
 @mcp.tool()
@@ -337,9 +373,10 @@ async def kompas_dimensions(
         '{"type":"angular","xc","yc","x1","y1","x2","y2","r":20}. Необязательно: "prefix", "suffix", '
         '"text" (заменить значение).'))],
     view: int | None = None,
+    layer: _LAYER = None,
 ) -> str:
     """Проставить размеры в активном (или указанном) виде."""
-    return _json(await com(lambda: drawing2d.dimensions(K(), items, view), "dimensions"))
+    return _json(await com(_in_doc(None, lambda k: drawing2d.dimensions(k, items, view, layer)), "dimensions"))
 
 
 @mcp.tool()
@@ -423,10 +460,14 @@ async def kompas_place_symbols(
         'instrument (прибор КИП) — "code":"PT","position":"101","panel":true,"marks":["H","L"].'))],
     unit: Annotated[float | None, Field(description="Модуль u, мм; по умолчанию по формату листа (A1 — 5 мм)")] = None,
     view: int | None = None,
+    layer: _LAYER = None,
 ) -> str:
     """Вставить условные обозначения (компрессоры, фильтры, клапаны, теплообменники…). Каждый символ — один
     макрообъект. Возвращает reference, габарит и координаты портов для подключения трубопроводов."""
-    return _json(await com(lambda: pneumo.place(K(), items, view, unit), "place symbols"))
+    def f(k):
+        with drawing2d.on_layer(k, k.view(number=view), layer):
+            return pneumo.place(k, items, view, unit)
+    return _json(await com(_in_doc(None, f), "place symbols"))
 
 
 @mcp.tool()
@@ -439,11 +480,108 @@ async def kompas_pipes(
         'control (линия управления, штриховая), main (трубопровод без среды), thin. code — своё обозначение '
         'в разрывах вместо стандартного (null — без него), title — своя строка для легенды.'))],
     view: int | None = None,
+    layer: _LAYER = None,
 ) -> str:
     """Провести трубопроводы и линии управления между портами символов (ортогонально, со стрелками потока).
     Каждая труба — один макрообъект с меткой среды: по ней kompas_legend собирает условные обозначения,
     а kompas_check_sheet проверяет, что концы попали в порты."""
-    return _json(await com(lambda: pneumo.pipes(K(), items, view), "pipes"))
+    def f(k):
+        with drawing2d.on_layer(k, k.view(number=view), layer):
+            return pneumo.pipes(k, items, view)
+    return _json(await com(_in_doc(None, f), "pipes"))
+
+
+# --- Слои, таблицы, сборка листа ---------------------------------------------
+@mcp.tool()
+async def kompas_layers(
+    action: Literal["list", "create", "current", "clear", "hide", "show", "rename", "delete"] = "list",
+    name: Annotated[str | None, Field(description="Имя слоя")] = None,
+    new_name: Annotated[str | None, Field(description="Для rename")] = None,
+    view: int | None = None,
+    document: _DOC = None,
+) -> str:
+    """Слои вида: список (с числом объектов), создать, сделать текущим, очистить (удалить все объекты слоя —
+    так перерисовывается один раздел листа), скрыть/показать, переименовать, удалить."""
+    destructive = f"kompas_layers(action=\"{action}\")" if action in ("clear", "delete") else None
+    return _json(await com(_in_doc(document, lambda k: drawing2d.layers(k, action, name, view, new_name), destructive),
+                           f"layers {action}"))
+
+
+@mcp.tool()
+async def kompas_table(
+    preset: Annotated[Literal["perechen", "kip", "custom"], Field(description=(
+        "perechen — перечень элементов по ГОСТ 2.701 (Поз. 20 / Наименование 110 / Кол. 10 / Примечание 45, "
+        "головка 15 мм, строки 8 мм), по умолчанию над основной надписью; kip — таблица КИП (Поз., параметр и "
+        "место, предельное значение, прибор, кол., примечание); custom — свои columns или заголовки из файла"))] = "custom",
+    rows: Annotated[list | None, Field(description=(
+        'Строки: списки ячеек, словари по key колонки ({"pos":"К1","name":"Компрессор","qty":"1","note":""}; '
+        'для kip — pos, param, value, device, qty, note) или {"group":"Компрессоры"} — заголовок группы. '
+        'Перенос внутри ячейки — \n: строка таблицы станет выше на row_height.'))] = None,
+    columns: Annotated[list[dict] | None, Field(description=(
+        '[{"title":"Режим","width":30,"align":"left|center|right","key":"mode"}, ...] — ширины в мм'))] = None,
+    source: Annotated[str | None, Field(description=(
+        "Файл .xlsx/.csv (путь абсолютный или относительно папки документа / KOMPAS_PROJECT_DIR): строки "
+        "добавляются после rows; без columns первая строка файла — заголовки, ширины — по содержимому"))] = None,
+    sheet: Annotated[str | None, Field(description="Лист книги xlsx")] = None,
+    cell_range: Annotated[str | None, Field(description="Диапазон xlsx, например A1:F12")] = None,
+    x: float | None = None,
+    y: float | None = None,
+    anchor: Literal["top_left", "bottom_left", "top_right", "bottom_right"] = "top_left",
+    place: Annotated[Literal["above_stamp"] | None, Field(description=(
+        "above_stamp — над основной надписью, правый край по рамке; длинная таблица продолжается левее "
+        "с повтором головки"))] = None,
+    gap: Annotated[float | None, Field(description="Зазор над основной надписью для above_stamp, мм (ГОСТ 2.701 — не менее 12)")] = None,
+    title: Annotated[str | None, Field(description="Заголовок над таблицей, например «Таблица 1 — Режимы работы»")] = None,
+    text_height: float = 3.5,
+    row_height: float | None = None,
+    header_height: float | None = None,
+    total_width: Annotated[float | None, Field(description="Общая ширина для автоширин из файла, мм (по умолчанию 185)")] = None,
+    layer: Annotated[str | None, Field(description=(
+        "Слой таблицы; по умолчанию «Перечень элементов», «КИП» или «Таблицы». Слой перед рисованием очищается"))] = None,
+    fix_glyphs: bool = False,
+    view: int | None = None,
+    document: _DOC = None,
+) -> str:
+    """Нарисовать таблицу на поле чертежа (линии и тексты на своём слое): перечень элементов по ГОСТ 2.701,
+    таблицу КИП или таблицу из xlsx/CSV. Повторный вызов с тем же слоем перерисовывает таблицу."""
+    def f(k):
+        return tables.table(k, preset, rows, columns, source, sheet, cell_range, total_width, layer,
+                            x=x, y=y, anchor=anchor, place=place, gap=gap, title=title, text_height=text_height,
+                            row_height=row_height, header_height=header_height, fix_glyphs=fix_glyphs,
+                            view_number=view)
+    return _json(await com(_in_doc(document, f, "kompas_table (очищает свой слой)"), "table", timeout=180))
+
+
+@mcp.tool(description="""Собрать лист (или его разделы) из сцены: JSON-файла или Python-скрипта в папке проекта.
+Правка схемы — это правка файла сцены и пересборка, а не десятки точечных вызовов.
+
+Сцена: {"unit":5, "transform":{"scale":1,"offset":[dx,dy]} | {"fit":[x1,y1,x2,y2],"margin":10},
+ "stamp":{"1":"..."}, "sections":[{"layer":"МКУ-1", "transform":{...}?, "ops":[
+   {"op":"symbols","items":[{"id":"К1","symbol":"compressor","x":0,"y":0,"label":"К1"}]},
+   {"op":"pipes","items":[{"points":["К1.out",[40,0],"Ф1.in"],"route":"hv","arrow":"end"}]},
+   {"op":"draw","items":[...как kompas_draw...]}, {"op":"dimensions","items":[...]},
+   {"op":"table","preset":"perechen","rows":[...]}]}]}
+Координаты сцены пересчитываются на лист (лист = сцена·scale + offset; fit вписывает габарит сцены в
+прямоугольник листа). Размер символов задаёт unit, высоту текста — height: от scale они не зависят.
+Таблицы — в координатах листа. В трубах "ID.порт" или {"port":"ID.порт","dx":5} — порт символа по id
+(в том числе из раздела, который сейчас не пересобирается).
+Скрипт .py получает params, math, read_rows(path) и должен присвоить scene = {...} (или build_scene(params)).
+Каждый раздел — свой слой: перед рисованием слой очищается. sections=["КИП"] пересоберёт только его.""")
+async def kompas_build(
+    source: Annotated[str | None, Field(description="Путь к .json/.py (абсолютный или относительно папки документа)")] = None,
+    scene_data: Annotated[dict | None, Field(description="Сцена прямо в вызове вместо файла")] = None,
+    sections: Annotated[list[str] | None, Field(description="Пересобрать только эти разделы (имена слоёв)")] = None,
+    clear: Annotated[bool, Field(description="Очищать слой раздела перед рисованием")] = True,
+    params: Annotated[dict | None, Field(description="Параметры для скрипта .py")] = None,
+    new_document: Annotated[bool, Field(description="Создать новый чертёж по sheet сцены и собрать в нём")] = False,
+    dry_run: Annotated[bool, Field(description="Только посчитать transform, габариты разделов на листе и порты")] = False,
+    view: int | None = None,
+    document: _DOC = None,
+) -> str:
+    if clear and not new_document and not dry_run:
+        _require_doc(document, "kompas_build с clear=true (очищает слои разделов)")
+    return _json(await com(lambda: scene.build(K(), source, scene_data, sections, clear, params, view, new_document,
+                                               dry_run, document), "build", timeout=600))
 
 
 @mcp.tool()

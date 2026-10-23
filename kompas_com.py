@@ -166,6 +166,7 @@ class Kompas:
         self.API7, self.API5 = API7, API5
         self._app7 = None
         self._app5 = None
+        self._pinned = None
 
     # подключение / автозапуск
     def _attach(self) -> bool:
@@ -237,8 +238,39 @@ class Kompas:
         docs = self.app7.Documents
         return [self.doc_info(docs.Item(i), i) for i in range(docs.Count)]
 
+    @contextlib.contextmanager
+    def pinned(self, d):
+        """На время блока «активный документ» — это d, даже если пользователь или другой клиент
+        переключит окно в КОМПАСе: длинная сборка не должна дорисоваться в чужой документ.
+        Рисование через API5 (символы, трубы) само делает документ активным, поэтому по выходе
+        активным снова становится тот документ, что был активен до операции."""
+        prev, self._pinned = self._pinned, d
+        was_active = None
+        if prev is None:
+            with contextlib.suppress(Exception):
+                was_active = self._app7.ActiveDocument
+        try:
+            yield d
+        finally:
+            self._pinned = prev
+            if was_active is not None:
+                with contextlib.suppress(Exception):
+                    if not was_active.Active:
+                        was_active.Active = True
+
+    def doc5(self, d=None):
+        """Документ API5 (ksDocument2D) именно для d, а не для того, что сейчас активно."""
+        d = d or self.resolve_doc()
+        doc5 = self.app5.ksGetDocumentByReference(d.Reference)
+        if doc5 is None:
+            self.activate(d)
+            doc5 = self.app5.ActiveDocument2D()
+        return doc5
+
     def resolve_doc(self, spec: str | int | None = None):
         app = self.app7
+        if (spec is None or spec == "") and self._pinned is not None:
+            return self._pinned
         if spec is None or spec == "":
             d = app.ActiveDocument
             if d is None:
@@ -303,10 +335,12 @@ class Kompas:
 
     # растровый рендер (API5) — без диалогов
     def render_png(self, d, dpi: int) -> bytes:
-        with self.temporarily_active(d):
-            return self._render_active_png(d, dpi)
+        if d.DocumentType in (1, 2):
+            return self._render_png(d, dpi)  # чертёж рендерится по ссылке на документ, без переключения
+        with self.temporarily_active(d):  # 3D и спецификация — только через активный документ
+            return self._render_png(d, dpi)
 
-    def _render_active_png(self, d, dpi: int) -> bytes:
+    def _render_png(self, d, dpi: int) -> bytes:
         t = d.DocumentType
         k5 = self.app5
         # Только что созданные объекты остаются выделенными, и экспорт рисует их цветом выделения
@@ -317,7 +351,7 @@ class Kompas:
         except Exception:  # noqa: BLE001 — не у всех типов документов есть менеджер выделения
             pass
         if t in (1, 2):
-            doc5 = k5.ActiveDocument2D()
+            doc5 = self.doc5(d)
         elif t in (4, 5):
             doc5 = k5.ActiveDocument3D()
         elif t == 3:
