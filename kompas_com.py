@@ -290,6 +290,10 @@ class Kompas:
             raise KompasError("Операция доступна только для чертежа или фрагмента.")
         return self.API7.IKompasDocument2D(d)
 
+    def doc5(self, d):
+        """ksDocument2D (API5) именно этого документа — не зависит от того, какой документ сейчас активен."""
+        return self.app5.TransferInterface(d, 1, 0)  # 1 — ksAPI5Auto
+
     def view(self, d=None, number: int | None = None):
         views = self.doc2d(d).ViewsAndLayersManager.Views
         v = views.ActiveView if number is None else views.ViewByNumber(number)
