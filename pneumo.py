@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass, field
 from typing import Callable
@@ -545,7 +546,8 @@ def _text_width(s: str, h: float) -> float:
     return 0.56 * h * len(s)  # шрифт ГОСТ: ширина буквы ≈ 0.56 высоты
 
 
-def place(k: Kompas, items: list[dict], view_number: int | None = None, unit: float | None = None) -> list[dict]:
+def place(k: Kompas, items: list[dict], view_number: int | None = None, unit: float | None = None,
+          tag: bool = True) -> list[dict]:
     d = k.resolve_doc()
     if d.DocumentType not in (1, 2):
         raise KompasError("Символы вставляются в чертёж или фрагмент.")
@@ -556,7 +558,7 @@ def place(k: Kompas, items: list[dict], view_number: int | None = None, unit: fl
         v.Update()
     u_def, label_h_def = default_unit(k)
     u0 = float(unit or u_def)
-    doc5 = k.app5.ActiveDocument2D()
+    doc5 = k.doc5(d)
     results = []
     for n, it in enumerate(items):
         name = it.get("symbol")
@@ -608,6 +610,9 @@ def place(k: Kompas, items: list[dict], view_number: int | None = None, unit: fl
         ref = doc5.ksEndObj()
         if not ref:
             raise KompasError(f"Символ #{n} ({name}) не создан.")
+        if tag:
+            set_tag(k, d, ref, {"t": "sym", "s": name, "x": xf.x, "y": xf.y, "r": xf.rot, "m": int(xf.mirror),
+                                      "u": u, "leads": leads, "label": str(label or "")})
         x0, y0, x1, y1 = _bbox(s)
         corners = [xf.pt(x0, y0), xf.pt(x1, y1), xf.pt(x0, y1), xf.pt(x1, y0)]
         results.append({
@@ -638,8 +643,85 @@ def _draw_label(doc5, s: Sym, xf: _Xform, text: str, pos, h: float) -> None:
     doc5.ksText(tx, ty, 0, h, 1, 0, text)
 
 
+# --- Метки макрообъектов ----------------------------------------------------
+# Символы, трубы и легенда — макрообъекты; в их имени (IMacroObject.Name) лежит JSON с тем, из чего они
+# построены. По этим меткам kompas_legend собирает условные обозначения, а kompas_check_sheet ищет порты.
+TAG = "kmcp:"
+
+
+def gabarit(k: Kompas, d, obj) -> list[float] | None:
+    """Габарит объекта API7 в мм вида. API7, а не ksGetObjGabaritRect: тот у неактивного документа даёт нули."""
+    ok, x1, y1, x2, y2 = k.API7.IKompasDocument2D1(d).GetObjectsGabarit(obj)
+    if not ok:
+        return None
+    return [round(x1, 3), round(y1, 3), round(x2, 3), round(y2, 3)]
+
+
+def set_tag(k: Kompas, d, ref: int, data: dict) -> None:
+    macros = k.API7.IDrawingContainer(k.view(d)).MacroObjects
+    n = macros.Count
+    # только что созданный макрообъект обычно последний — не перебираем весь вид
+    for i in [n - 1] + list(range(n - 2, -1, -1)):
+        m = k.API7.IMacroObject(macros.Item(i))
+        if m.Reference == ref:
+            data = {**data, "gab": gabarit(k, d, m)}
+            m.Name = TAG + json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+            return
+
+
+def read_tag(m) -> dict | None:
+    name = m.Name or ""
+    if not name.startswith(TAG):
+        return None
+    try:
+        return json.loads(name[len(TAG):])
+    except ValueError:
+        return None
+
+
+def symbol_ports(tag: dict) -> dict[str, tuple[float, float]]:
+    """Порты символа по его метке — так же, как их считает place()."""
+    s = build(tag["s"])
+    xf = _Xform(tag["x"], tag["y"], tag["u"], tag["r"], bool(tag["m"]))
+    leads = float(tag.get("leads", 0))
+    out = {}
+    for pname, p in s.ports.items():
+        px, py = xf.pt(p.x, p.y)
+        dx, dy = xf.vec(p.dx, p.dy)
+        if leads and (p.dx or p.dy):
+            px, py = px + dx * leads, py + dy * leads
+        out[pname] = (px, py)
+    return out
+
+
 # --- Трубопроводы ------------------------------------------------------------
-PIPE_STYLES = {"main": MAIN, "control": DASHED, "thin": THIN}
+# Среды: стиль линии и обозначение в разрыве линии. Цифры — по ГОСТ 2.784-96 (табл. 1: 1 — вода, 3 — воздух,
+# 14 — масло); для дренажа и сброса на свечу/факел цифр в стандарте нет — буквы, как принято на схемах
+# компрессорных станций. Основной газовый трубопровод — сплошная основная без обозначения, импульсные
+# линии КИП — сплошная тонкая (ГОСТ 21.208), линии управления — штриховая. code в элементе заменяет обозначение.
+PIPE_KINDS: dict[str, dict] = {
+    "gas": {"style": MAIN, "code": None, "title": "Трубопровод газа"},
+    "oil": {"style": MAIN, "code": "14", "title": "Маслопровод"},
+    "drain": {"style": MAIN, "code": "Д", "title": "Дренаж"},
+    "vent": {"style": MAIN, "code": "С", "title": "Сброс газа на свечу (факел)"},
+    "water": {"style": MAIN, "code": "1", "title": "Трубопровод воды"},
+    "air": {"style": MAIN, "code": "3", "title": "Трубопровод воздуха"},
+    "impulse": {"style": THIN, "code": None, "title": "Импульсная линия"},
+    "control": {"style": DASHED, "code": None, "title": "Линия управления"},
+    "main": {"style": MAIN, "code": None, "title": "Трубопровод"},
+    "thin": {"style": THIN, "code": None, "title": "Линия связи"},
+}
+PIPE_ALIASES = {"flare": "vent"}
+CODE_HEIGHT_BY_FORMAT = {"A0": 5.0, "A1": 3.5, "A2": 3.5, "A3": 2.5, "A4": 2.5, "A5": 2.5}
+CODE_STEP = 150.0  # мм между повторами обозначения на длинном прямом участке
+CODE_STUB = 6.0    # мм сплошной линии минимум с каждой стороны разрыва
+
+
+def pipe_kind(kind: str | None, n: int | str = "") -> tuple[str, dict]:
+    kind = PIPE_ALIASES.get(kind or "main", kind or "main")
+    if kind not in PIPE_KINDS:
+        raise KompasError(f"Трубопровод #{n}: kind — {', '.join(PIPE_KINDS)} (flare = vent).")
+    return kind, PIPE_KINDS[kind]
 
 
 def _route(pts: list[list[float]], route: str | None) -> list[tuple[float, float]]:
@@ -654,6 +736,81 @@ def _route(pts: list[list[float]], route: str | None) -> list[tuple[float, float
     return out
 
 
+def code_width(code: str, h: float) -> float:
+    """Оценка ширины текста шрифтом ГОСТ (с межбуквенным интервалом) — когда нельзя измерить."""
+    return 0.8 * h * len(code)
+
+
+def measure_text(k: Kompas, d, s: str, h: float) -> float:
+    """Ширина текста по габариту КОМПАСа — по пробному тексту, который сразу удаляется."""
+    o = k.API7.IDrawingContainer(k.view(d)).DrawingTexts.Add()
+    o.X, o.Y = 0.0, 0.0
+    txt = k.API7.IText(o)
+    txt.Str = s
+    line = txt.TextLine(0)
+    for i in range(line.Count):
+        k.API7.ITextFont(line.TextItem(i)).Height = h
+        k.API7.ITextItem(line.TextItem(i)).Update()
+    box = gabarit(k, d, o) if o.Update() else None
+    o.Delete()
+    return box[2] - box[0] if box and box[2] > box[0] else code_width(s, h)
+
+
+def _code_gap(code_w: float) -> float:
+    """Длина разрыва линии под обозначение: текст и по 1 мм с каждой стороны."""
+    return code_w + 2.0
+
+
+def _code_spots(path, code_w: float, step: float) -> list[tuple[int, float]]:
+    """Где разорвать линию под обозначение: (номер участка, расстояние от его начала до центра разрыва)."""
+    lens = [math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(path, path[1:])]
+    gap = _code_gap(code_w)
+    fit = [i for i, L in enumerate(lens) if L >= gap + 2 * CODE_STUB]
+    longest = max(fit, key=lens.__getitem__, default=None)
+    spots = []
+    for i in fit:
+        # на самом длинном участке — хотя бы одно обозначение, на остальных — только через каждые step мм
+        cnt = max(1, int(lens[i] // step)) if i == longest else int(lens[i] // step)
+        spots += [(i, lens[i] * (j + 0.5) / cnt) for j in range(cnt)]
+    if not spots and lens:
+        # короткая труба — одно обозначение на самом длинном участке, если оно туда влезает
+        i = max(range(len(lens)), key=lens.__getitem__)
+        if lens[i] >= gap + 2.0:
+            spots.append((i, lens[i] / 2))
+    return spots
+
+
+def draw_pipe(doc5, path, style: int, code: str | None, code_h: float, code_w: float, spots, arrow,
+              head_u: float) -> None:
+    """Линии трубы с разрывами под обозначение среды и стрелками; вызывается внутри открытого макрообъекта."""
+    for i, (a, b) in enumerate(zip(path, path[1:])):
+        L = math.hypot(b[0] - a[0], b[1] - a[1])
+        ux, uy = (b[0] - a[0]) / L, (b[1] - a[1]) / L
+        pos = 0.0
+        for t in sorted(t for j, t in spots if j == i):
+            half = _code_gap(code_w) / 2
+            doc5.ksLineSeg(a[0] + ux * pos, a[1] + uy * pos, a[0] + ux * (t - half), a[1] + uy * (t - half), style)
+            pos = t + half
+            cx, cy = a[0] + ux * t, a[1] + uy * t
+            if abs(uy) > abs(ux):  # вертикальный участок — текст вдоль линии, снизу вверх
+                doc5.ksText(cx + code_h / 2, cy - code_w / 2, 90, code_h, 1, 0, code)
+            else:
+                doc5.ksText(cx - code_w / 2, cy - code_h / 2, 0, code_h, 1, 0, code)
+        doc5.ksLineSeg(a[0] + ux * pos, a[1] + uy * pos, *b, style)
+    for where in (("end",) if arrow == "end" else ("start",) if arrow == "start"
+                  else ("start", "end") if arrow == "both" else ()):
+        (x1, y1), (x2, y2) = (path[-2], path[-1]) if where == "end" else (path[1], path[0])
+        L = math.hypot(x2 - x1, y2 - y1) or 1.0
+        ux, uy = (x2 - x1) / L, (y2 - y1) / L
+        hl, hw = 0.8 * head_u, 0.25 * head_u
+        bx, by = x2 - ux * hl, y2 - uy * hl
+        tri = [(x2, y2), (bx - uy * hw, by + ux * hw), (bx + uy * hw, by - ux * hw)]
+        doc5.ksColouring(0)
+        for a, b in zip(tri, tri[1:] + tri[:1]):
+            doc5.ksLineSeg(*a, *b, MAIN)
+        doc5.ksEndObj()
+
+
 def pipes(k: Kompas, items: list[dict], view_number: int | None = None) -> list[dict]:
     d = k.resolve_doc()
     k.activate(d)
@@ -661,34 +818,38 @@ def pipes(k: Kompas, items: list[dict], view_number: int | None = None) -> list[
         v = k.view(d, view_number)
         v.Current = True
         v.Update()
-    _, label_h = default_unit(k)
     u, _ = default_unit(k)
-    doc5 = k.app5.ActiveDocument2D()
+    code_h_def = CODE_HEIGHT_BY_FORMAT.get(_sheet_format(k) or "A1", 3.5)
+    doc5 = k.doc5(d)
     out = []
     for n, it in enumerate(items):
         pts = it.get("points") or []
         if len(pts) < 2:
             raise KompasError(f"Трубопровод #{n}: нужно минимум 2 точки в points.")
-        kind = it.get("kind", "main")
-        if kind not in PIPE_STYLES:
-            raise KompasError(f"Трубопровод #{n}: kind — {', '.join(PIPE_STYLES)}.")
+        kind, spec = pipe_kind(it.get("kind"), n)
+        code = it["code"] if "code" in it else spec["code"]
+        code = str(code) if code not in (None, "") else None
+        code_h = float(it.get("code_height", code_h_def))
         path = _route(pts, it.get("route"))
-        refs = []
-        for a, b in zip(path, path[1:]):
-            if a != b:
-                refs.append(doc5.ksLineSeg(*a, *b, PIPE_STYLES[kind]))
-        arrow = it.get("arrow")  # "end" | "start" | "both"
-        for where in (("end",) if arrow == "end" else ("start",) if arrow == "start"
-                      else ("start", "end") if arrow == "both" else ()):
-            (x1, y1), (x2, y2) = (path[-2], path[-1]) if where == "end" else (path[1], path[0])
-            L = math.hypot(x2 - x1, y2 - y1) or 1.0
-            ux, uy = (x2 - x1) / L, (y2 - y1) / L
-            hl, hw = 0.8 * u, 0.25 * u
-            bx, by = x2 - ux * hl, y2 - uy * hl
-            tri = [(x2, y2), (bx - uy * hw, by + ux * hw), (bx + uy * hw, by - ux * hw)]
-            doc5.ksColouring(0)
-            for a, b in zip(tri, tri[1:] + tri[:1]):
-                doc5.ksLineSeg(*a, *b, MAIN)
-            refs.append(doc5.ksEndObj())
-        out.append({"kind": kind, "points": [[round(x, 2), round(y, 2)] for x, y in path], "references": refs})
+        path = [p for i, p in enumerate(path) if i == 0 or p != path[i - 1]]
+        if len(path) < 2:
+            raise KompasError(f"Трубопровод #{n}: все точки совпадают.")
+        code_w = measure_text(k, d, code, code_h) if code else 0.0
+        spots = _code_spots(path, code_w, float(it.get("code_step", CODE_STEP))) if code else []
+
+        doc5.ksMacro(0)
+        draw_pipe(doc5, path, spec["style"], code, code_h, code_w, spots, it.get("arrow"), u)
+        ref = doc5.ksEndObj()
+        if not ref:
+            raise KompasError(f"Трубопровод #{n} не создан.")
+        pts_out = [[round(x, 3), round(y, 3)] for x, y in path]
+        set_tag(k, d, ref, {"t": "pipe", "kind": kind, "code": code, "style": spec["style"],
+                                  "title": str(it.get("title") or spec["title"]), "pts": pts_out})
+        rec = {"kind": kind, "reference": ref, "points": pts_out}
+        if code:
+            rec["code"] = code
+            if not spots:
+                rec["warning"] = (f"обозначение «{code}» не поместилось: все участки короче "
+                                  f"{_code_gap(code_w) + 2:.0f} мм")
+        out.append(rec)
     return out

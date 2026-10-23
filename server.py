@@ -23,6 +23,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 import drawing2d
 import model3d
 import pneumo
+import scheme
 import winutil
 from kompas_com import DOC_TYPES, ComWorker, Kompas, KompasError, _kompas_exe
 
@@ -61,7 +62,9 @@ construction (вспомогательная, не печатается), thick 
 
 Технологические и пневмосхемы: условные обозначения ставьте через kompas_place_symbols (каталог —
 kompas_symbols_catalog; на A1 модуль 5 мм выбирается сам), трубы — kompas_pipes по координатам портов
-из ответа вставки. Поток слева направо; обратный клапан в такой линии — rotate=180.
+из ответа вставки, kind — среда (gas, oil, drain, vent, impulse, control…). Поток слева направо; обратный
+клапан в такой линии — rotate=180. Легенда — kompas_legend (только то, что есть на листе); перед сдачей листа —
+kompas_check_sheet и kompas_preview(region=...) по каждой найденной проблеме.
 
 3D (kompas_3d_feature): первая операция mode="add" создаёт тело, далее add — приклеить, cut — вырезать.
 direction="normal" — вдоль нормали плоскости (для XOY это +Z). Для вращения в эскизе нужна ось style="axial".
@@ -422,13 +425,54 @@ async def kompas_place_symbols(
 @mcp.tool()
 async def kompas_pipes(
     items: Annotated[list[dict], Field(description=(
-        'Линии связи: {"points":[[x1,y1],[x2,y2],...],"route":"hv|vh|null","kind":"main|control|thin",'
-        '"arrow":"end|start|both|null"}. route вставляет прямой угол между точками (hv — сначала по X). '
-        'kind=main — трубопровод (основная), control — линия управления (штриховая).'))],
+        'Линии связи: {"points":[[x1,y1],[x2,y2],...],"route":"hv|vh|null","kind":"gas","arrow":"end|start|both|null",'
+        '"code":"14","title":"..."}. route вставляет прямой угол между точками (hv — сначала по X). '
+        'kind — среда: gas (газ, сплошная основная), oil (масло, «14» в разрывах линии), drain (дренаж, «Д»), '
+        'vent/flare (сброс на свечу/факел, «С»), water («1»), air («3»), impulse (импульсная, сплошная тонкая), '
+        'control (линия управления, штриховая), main (трубопровод без среды), thin. code — своё обозначение '
+        'в разрывах вместо стандартного (null — без него), title — своя строка для легенды.'))],
     view: int | None = None,
 ) -> str:
-    """Провести трубопроводы и линии управления между портами символов (ортогонально, со стрелками потока)."""
+    """Провести трубопроводы и линии управления между портами символов (ортогонально, со стрелками потока).
+    Каждая труба — один макрообъект с меткой среды: по ней kompas_legend собирает условные обозначения,
+    а kompas_check_sheet проверяет, что концы попали в порты."""
     return _json(await com(lambda: pneumo.pipes(K(), items, view), "pipes"))
+
+
+@mcp.tool()
+async def kompas_legend(
+    x: Annotated[float, Field(description="Левый верхний угол таблицы, мм (заголовок — над ним)")],
+    y: Annotated[float, Field(description="Левый верхний угол таблицы, мм")],
+    symbols: Annotated[bool | list[str], Field(description=(
+        "false — только виды линий; true — ещё и все символы, что есть на листе; "
+        "список имён — именно эти символы"))] = False,
+    width: Annotated[float, Field(description="Ширина графы «наименование», мм (расширяется под текст)")] = 120.0,
+    title: str = "Условные обозначения",
+    replace: Annotated[bool, Field(description="Удалить прежний блок, построенный этим инструментом")] = True,
+    view: int | None = None,
+) -> str:
+    """Построить блок «Условные обозначения» только из того, что реально есть на листе: виды трубопроводов
+    (по средам из kompas_pipes) и, по желанию, символы из kompas_place_symbols. Блок — один макрообъект."""
+    return _json(await com(lambda: scheme.legend(K(), x, y, symbols, width, title, replace, view), "legend",
+                           timeout=120))
+
+
+@mcp.tool()
+async def kompas_check_sheet(
+    document: Annotated[str | None, Field(description="Документ (индекс, имя или путь); по умолчанию активный. "
+                                                      "Проверка только читает, документ не меняется")] = None,
+    view: int | None = None,
+    tolerance: Annotated[float, Field(description="Допуск попадания конца трубы в порт, мм")] = 1.0,
+    region: Annotated[list[float] | None, Field(description="[x1, y1, x2, y2] мм листа — проверить только участок")] = None,
+    limit: Annotated[int, Field(ge=1, le=2000)] = 200,
+) -> str:
+    """Автопроверка листа схемы: текст поверх линий, символов и другого текста; концы труб, не попавшие
+    в порты символов (и не на другую трубу); чужие линии внутри кружков приборов КИП. Каждая проблема — с
+    координатами в мм листа и region для kompas_preview."""
+    def f():
+        k = K()
+        return scheme.check(k, k.resolve_doc(document), view, tolerance, region, limit)
+    return _json(await com(f, "check sheet", timeout=300))
 
 
 # --- Запасной путь -----------------------------------------------------------
