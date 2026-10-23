@@ -268,6 +268,22 @@ class Kompas:
         if not d.Active:
             d.Active = True
 
+    @contextlib.contextmanager
+    def temporarily_active(self, d):
+        """Сделать d активным на время блока и вернуть прежний активный документ.
+
+        Другие сессии и сам пользователь работают с тем же КОМПАСом: если оставить чужой документ
+        активным, следующая операция «в активном документе» попадёт не туда.
+        """
+        prev = self.app7.ActiveDocument
+        self.activate(d)
+        try:
+            yield d
+        finally:
+            if prev is not None:
+                with contextlib.suppress(pywintypes.com_error):  # прежний документ могли закрыть
+                    self.activate(prev)
+
     def doc2d(self, d=None):
         d = d or self.resolve_doc()
         if d.DocumentType not in (1, 2):
@@ -283,7 +299,10 @@ class Kompas:
 
     # растровый рендер (API5) — без диалогов
     def render_png(self, d, dpi: int) -> bytes:
-        self.activate(d)
+        with self.temporarily_active(d):
+            return self._render_active_png(d, dpi)
+
+    def _render_active_png(self, d, dpi: int) -> bytes:
         t = d.DocumentType
         k5 = self.app5
         # Только что созданные объекты остаются выделенными, и экспорт рисует их цветом выделения
@@ -331,13 +350,16 @@ class Kompas:
         return w, h
 
     # выполнение произвольного кода (запасной путь для всего, чего нет в инструментах)
-    def run_python(self, code: str) -> str:
+    def run_python(self, code: str, document: str | None = None) -> str:
+        # С document код получает именно этот документ в doc/doc2d()/view(), а не тот,
+        # что окажется активным (его мог переключить пользователь или другая сессия).
+        target = self.resolve_doc(document) if document else self._app7.ActiveDocument
         ns: dict[str, Any] = {
             "kompas": self, "app7": self.app7, "app5": self.app5,
             "API7": self.API7, "API5": self.API5,
-            "doc": self._app7.ActiveDocument,
-            "doc2d": lambda d=None: self.doc2d(d),
-            "view": lambda d=None, number=None: self.view(d, number),
+            "doc": target,
+            "doc2d": lambda d=None: self.doc2d(d or target),
+            "view": lambda d=None, number=None: self.view(d or target, number),
             "cast": _cast, "LINE_STYLES": LINE_STYLES, "result": None,
         }
         # Свой print вместо redirect_stdout: тот подменяет sys.stdout всему процессу, а код может

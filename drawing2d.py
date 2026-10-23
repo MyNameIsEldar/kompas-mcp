@@ -243,9 +243,12 @@ def list_objects(k: Kompas, view_number: int | None = None, limit: int = 500) ->
             "total": total, "shown": len(objs), "objects": objs}
 
 
-def delete_objects(k: Kompas, references: list[int], view_number: int | None = None) -> dict:
+def delete_objects(k: Kompas, document: str, references: list[int], view_number: int | None = None) -> dict:
+    # Документ обязателен: удаление «в активном» однажды попало в чужой открытый чертёж.
+    if not document:
+        raise KompasError("Укажите document — удаление делается только в явно названном документе.")
     want = {int(r) for r in references}
-    v = k.view(number=view_number)
+    v = k.view(k.resolve_doc(document), number=view_number)
     found = [o for _, _, o in _iter_objects(k, v) if o.Reference in want]
     deleted = []
     for o in found:

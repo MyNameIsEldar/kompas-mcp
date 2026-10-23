@@ -41,7 +41,7 @@ INSTRUCTIONS = """\
 → kompas_preview (обязательно смотрите результат после изменений) → правки → kompas_save.
 
 После каждой содержательной правки смотрите kompas_preview (мелкие места — region в мм листа) и не считайте
-работу готовой, пока не проверили картинку. Ошибку правьте точечно: kompas_list_objects → kompas_delete → заново.
+работу готовой, пока не проверили картинку. Ошибку правьте точечно: kompas_list_objects → kompas_delete(document=…) → заново.
 
 Координаты 2D — миллиметры в системе координат текущего вида. В системном виде (номер 0, масштаб 1)
 они совпадают с координатами листа: начало в левом нижнем углу листа, X вправо, Y вверх.
@@ -74,6 +74,8 @@ direction="normal" — вдоль нормали плоскости (для XOY 
 посмотрите kompas_window_screenshot и нажмите кнопку через kompas_dialogs. Решения с последствиями
 (сохранить, заменить файл, потерять изменения) — сначала спросите пользователя.
 Пользователь может работать в КОМПАСе одновременно с вами: не закрывайте и не меняйте его документы без просьбы.
+С тем же КОМПАСом могут работать и другие сессии, поэтому активный документ в любой момент может оказаться чужим.
+Удаляйте и меняйте только в явно названном документе (document= в kompas_delete и kompas_run_python).
 """
 
 mcp = MCPServer("kompas", instructions=INSTRUCTIONS)
@@ -230,10 +232,10 @@ async def kompas_preview(
     def f():
         k = K()
         d = k.resolve_doc(document)
-        k.activate(d)
         info: dict[str, Any] = {"document": d.Name}
         if d.DocumentType in (4, 5):
-            info["orientations"] = model3d.set_projection(k, orientation or "")
+            with k.temporarily_active(d):
+                info["orientations"] = model3d.set_projection(k, orientation or "")
         sheet = k.sheet_size_mm(d)
         if sheet:
             W, H = sheet
@@ -345,9 +347,12 @@ async def kompas_list_objects(view: int | None = None,
 
 
 @mcp.tool()
-async def kompas_delete(references: list[int], view: int | None = None) -> str:
+async def kompas_delete(document: Annotated[str, Field(description=(
+                            "Документ, в котором удалять: имя файла, часть пути или индекс из kompas_status. "
+                            "Обязателен — удаление никогда не идёт «в активный», его мог переключить пользователь."))],
+                        references: list[int], view: int | None = None) -> str:
     """Удалить объекты вида по их reference (из kompas_list_objects или kompas_draw)."""
-    return _json(await com(lambda: drawing2d.delete_objects(K(), references, view), "delete"))
+    return _json(await com(lambda: drawing2d.delete_objects(K(), document, references, view), "delete"))
 
 
 @mcp.tool()
@@ -437,11 +442,14 @@ async def kompas_pipes(
 @mcp.tool()
 async def kompas_run_python(code: Annotated[str, Field(description=(
         "Python-код, выполняется в COM-потоке сервера. Доступны: app7 (IApplication API7), app5 (KompasObject API5), "
-        "API7, API5 (модули типов), doc (активный документ), doc2d(), view(number=None), cast(module, 'IName', obj), "
-        "LINE_STYLES. Печатайте через print(); можно присвоить result = ..."))],
+        "API7, API5 (модули типов), doc (документ из document, иначе активный), doc2d(), view(number=None) — "
+        "по умолчанию для doc, cast(module, 'IName', obj), LINE_STYLES. Печатайте через print(); можно присвоить result = ..."))],
+                            document: Annotated[str | None, Field(description=(
+                                "Документ для doc/doc2d()/view(): имя, часть пути или индекс. Указывайте всегда, когда код "
+                                "что-то меняет или удаляет: активный документ может оказаться чужим."))] = None,
                             timeout: Annotated[float, Field(ge=5, le=600)] = 120) -> str:
     """Выполнить произвольный код против API КОМПАСа — для всего, чего нет в остальных инструментах."""
-    return await com(lambda: K().run_python(code), "run_python", timeout=timeout)
+    return await com(lambda: K().run_python(code, document), "run_python", timeout=timeout)
 
 
 def _sdk_include() -> str | None:

@@ -98,7 +98,9 @@ async def t_drawing():
 async def t_delete():
     lst = json.loads(await call("kompas_list_objects"))
     texts = [o["reference"] for o in lst["objects"] if o["type"] == "text"]
-    await call("kompas_delete", references=texts)
+    status = json.loads(await call("kompas_status", launch=False))
+    active = next(d["index"] for d in status["documents"] if d.get("active"))
+    await call("kompas_delete", document=str(active), references=texts)
 
 
 async def t_views():
