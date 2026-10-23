@@ -23,7 +23,7 @@ async def main():
     sym = json.loads(await d.call("kompas_place_symbols", items=[
         {"symbol": "line_break", "x": 80, "y": y, "rotate": 180, "incoming": True, "text": "из ГСП"},   # 0
         {"symbol": "valve_electric", "x": 120, "y": y, "label": "ЗД1", "label_pos": "bottom"},          # 1
-        {"symbol": "separator", "x": 180, "y": y - 7, "label": "С-1", "label_pos": "left"},             # 2
+        {"symbol": "separator", "x": 180, "y": y - 7, "label": "С-1", "label_pos": [-17, -8]},             # 2
         {"symbol": "instrument", "x": 222, "y": y - 12, "code": "LIA", "position": "102",               # 3
          "marks": ["H", "L"]},
         {"symbol": "valve_solenoid", "x": 180, "y": y - 70, "rotate": 270, "label": "КЭ1",              # 4

@@ -71,10 +71,11 @@ class Sym:
         else:
             self.poly(tri, closed=True)
 
-    def text(self, x, y, s, h=1.0, narrow=1.0, anchor=None):
+    def text(self, x, y, s, h=1.0, narrow=1.0, anchor=None, fit=None):
         """Горизонтальный текст: по центру в (x, y) или, если задан anchor (dx, dy), — вплотную за точкой
-        в этом направлении (направление поворачивается вместе с символом, сам текст — нет)."""
-        self.items.append(("text", [(x, y)], s, h, narrow, anchor))
+        в этом направлении (направление поворачивается вместе с символом, сам текст — нет).
+        fit — наибольшая ширина: шире по факту — сужается при вставке."""
+        self.items.append(("text", [(x, y)], s, h, narrow, anchor, fit))
 
     def port(self, name, x, y, dx, dy):
         self.ports[name] = Port(x, y, dx, dy)
@@ -468,7 +469,7 @@ def line_break(s: Sym, text: str = "в Е-1", incoming: bool = False):
 
 
 _KIP_R = 1.0  # прибор по ГОСТ 21.208 — окружность Ø10 мм на A1 (u = 5 мм)
-_GLYPH = 0.62  # ширина заглавной буквы / цифры с промежутком в долях высоты шрифта
+_GLYPH = 0.82  # ширина заглавной буквы / цифры с промежутком в долях высоты шрифта (замер в КОМПАСе)
 
 
 def _fit_text(s: str, h_max: float, width_at) -> tuple[float, float]:
@@ -501,10 +502,10 @@ def instrument(s: Sym, code: str = "PI", position: str = "", panel: bool = False
         h, k = _fit_text(code, 0.55 if position or panel else 0.7,
                          lambda h: chord(gap + h) if position or panel else chord(h / 2))
         y = gap + h / 2 if position or panel else 0
-        s.text(0, y, code, h=h, narrow=k)
+        s.text(0, y, code, h=h, narrow=k, fit=chord(abs(y) + h / 2))
     if position:
         h, k = _fit_text(position, 0.5, lambda h: chord(gap + h))
-        s.text(0, -gap - h / 2, position, h=h, narrow=k)
+        s.text(0, -gap - h / 2, position, h=h, narrow=k, fit=chord(gap + h))
     if marks:
         marks = [marks] if isinstance(marks, str) else [str(m) for m in marks]
         if len(marks) == 1:
@@ -699,8 +700,10 @@ def build(name: str, params: dict | None = None) -> Sym:
     return s
 
 
-def _text_box(x, y, s, h, narrow, anchor) -> tuple[float, float, float, float]:
+def _text_box(x, y, s, h, narrow, anchor, fit=None) -> tuple[float, float, float, float]:
     w = _text_width(s, h) * narrow
+    if fit:
+        w = min(w, fit)
     if anchor:
         x, y = x + anchor[0] * w / 2, y + anchor[1] * h / 2
     return x - w / 2, y - h / 2, x + w / 2, y + h / 2
@@ -781,7 +784,34 @@ def default_unit(k: Kompas) -> tuple[float, float]:
 
 
 def _text_width(s: str, h: float) -> float:
-    return 0.56 * h * len(s)  # шрифт ГОСТ: ширина буквы ≈ 0.56 высоты
+    return 0.8 * h * len(s)  # оценка; точная ширина — по габариту после вставки (_put_text)
+
+
+def _measure(k: Kompas, doc5, texts, cache: dict) -> None:
+    """Габарит строк шрифтом высотой 1 мм без сужения: (смещение левого края, ширина). Пробный текст
+    вставляется и сразу удаляется — до открытия макрообъекта: внутри него габарит не считается."""
+    for text in texts:
+        if text in cache:
+            continue
+        ref = doc5.ksText(0, 0, 0, 10, 1, 0, text)
+        rect = k.app5.GetParamStruct(15)  # ko_RectParam
+        doc5.ksGetObjGabaritRect(ref, rect)
+        x0, x1 = rect.GetpBot().x, rect.GetpTop().x
+        doc5.ksDeleteObj(ref)
+        cache[text] = (x0 / 10, (x1 - x0) / 10) if x1 > x0 else (0.0, _text_width(text, 1.0))
+
+
+def _put_text(doc5, cache, x, y, text, h, narrow=1.0, anchor=None, fit=None):
+    """Текст по центру в (x, y) или вплотную за точкой в направлении anchor; шире fit — сужается."""
+    off, w1 = cache.get(text) or (0.0, _text_width(text, 1.0))
+    w = w1 * h * narrow
+    if fit and w > fit:
+        narrow *= fit / w
+        w = fit
+    cx, cy = x, y
+    if anchor:
+        cx, cy = x + anchor[0] * w / 2, y + anchor[1] * h / 2
+    return doc5.ksText(cx - w / 2 - off * h * narrow, cy - h / 2, 0, h, narrow, 0, text)
 
 
 def place(k: Kompas, items: list[dict], view_number: int | None = None, unit: float | None = None) -> list[dict]:
@@ -796,7 +826,7 @@ def place(k: Kompas, items: list[dict], view_number: int | None = None, unit: fl
     u_def, label_h_def = default_unit(k)
     u0 = float(unit or u_def)
     doc5 = k.app5.ActiveDocument2D()
-    results = []
+    results, metrics = [], {}
     for n, it in enumerate(items):
         name = it.get("symbol")
         s = build(name, {p: it[p] for p in SYMBOL_PARAMS if p in it})
@@ -807,6 +837,8 @@ def place(k: Kompas, items: list[dict], view_number: int | None = None, unit: fl
         leads = float(it.get("leads", 0))
         label_h = float(it.get("label_height", label_h_def))
 
+        label = it.get("label")
+        _measure(k, doc5, [el[2] for el in s.items if el[0] == "text"] + ([str(label)] if label else []), metrics)
         doc5.ksMacro(0)
         for el in s.items:
             kind = el[0]
@@ -829,12 +861,9 @@ def place(k: Kompas, items: list[dict], view_number: int | None = None, unit: fl
                     doc5.ksLineSeg(*a, *b, MAIN)
                 doc5.ksEndObj()
             elif kind == "text":
-                _, _, text, h, narrow, anchor = el
+                _, _, text, h, narrow, anchor, fit = el
                 x, y = xf.pt(*el[1][0])
-                if anchor:
-                    anchor = xf.vec(*anchor)
-                x0, y0, _, _ = _text_box(x, y, text, h * u, narrow, anchor)
-                doc5.ksText(x0, y0, 0, h * u, narrow, 0, text)
+                _put_text(doc5, metrics, x, y, text, h * u, narrow, anchor and xf.vec(*anchor), fit and fit * u)
         ports = {}
         for pname, p in s.ports.items():
             px, py = xf.pt(p.x, p.y)
@@ -844,9 +873,8 @@ def place(k: Kompas, items: list[dict], view_number: int | None = None, unit: fl
                 doc5.ksLineSeg(px, py, ex, ey, MAIN)
                 px, py = ex, ey
             ports[pname] = {"x": round(px, 3), "y": round(py, 3), "dir": [round(dx), round(dy)]}
-        label = it.get("label")
         if label:
-            _draw_label(doc5, s, xf, str(label), it.get("label_pos", "top"), label_h)
+            _draw_label(metrics, doc5, s, xf, str(label), it.get("label_pos", "top"), label_h)
         ref = doc5.ksEndObj()
         if not ref:
             raise KompasError(f"Символ #{n} ({name}) не создан.")
@@ -860,24 +888,24 @@ def place(k: Kompas, items: list[dict], view_number: int | None = None, unit: fl
     return results
 
 
-def _draw_label(doc5, s: Sym, xf: _Xform, text: str, pos, h: float) -> None:
+def _draw_label(metrics: dict, doc5, s: Sym, xf: _Xform, text: str, pos, h: float) -> None:
     """Позиционное обозначение (К1, Ф, Р…) рядом с символом; текст всегда горизонтальный."""
     x0, y0, x1, y1 = _bbox(s)
     corners = [xf.pt(x0, y0), xf.pt(x1, y1), xf.pt(x0, y1), xf.pt(x1, y0)]
     bx0, bx1 = min(c[0] for c in corners), max(c[0] for c in corners)
     by0, by1 = min(c[1] for c in corners), max(c[1] for c in corners)
-    w, gap = _text_width(text, h), h * 0.6
+    gap, anchor = h * 0.6, None
     if isinstance(pos, (list, tuple)):
-        tx, ty = xf.x + float(pos[0]) - w / 2, xf.y + float(pos[1]) - h / 2
+        tx, ty = xf.x + float(pos[0]), xf.y + float(pos[1])
     elif pos == "bottom":
-        tx, ty = (bx0 + bx1) / 2 - w / 2, by0 - gap - h
+        tx, ty = (bx0 + bx1) / 2, by0 - gap - h / 2
     elif pos == "left":
-        tx, ty = bx0 - gap - w, (by0 + by1) / 2 - h / 2
+        tx, ty, anchor = bx0 - gap, (by0 + by1) / 2, (-1, 0)
     elif pos == "right":
-        tx, ty = bx1 + gap, (by0 + by1) / 2 - h / 2
+        tx, ty, anchor = bx1 + gap, (by0 + by1) / 2, (1, 0)
     else:  # top
-        tx, ty = (bx0 + bx1) / 2 - w / 2, by1 + gap
-    doc5.ksText(tx, ty, 0, h, 1, 0, text)
+        tx, ty = (bx0 + bx1) / 2, by1 + gap + h / 2
+    _put_text(doc5, metrics, tx, ty, text, h, anchor=anchor)
 
 
 # --- Трубопроводы ------------------------------------------------------------
