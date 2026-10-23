@@ -16,7 +16,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUILD = os.path.join(ROOT, "dist", "mcpb")
 OUT = os.path.join(ROOT, "dist", "kompas.mcpb")
-SERVER_FILES = ["server.py", "kompas_com.py", "drawing2d.py", "model3d.py", "winutil.py",
+SERVER_FILES = ["server.py", "kompas_com.py", "drawing2d.py", "model3d.py", "pneumo.py", "winutil.py",
                 "requirements.txt", "README.md"]
 
 sys.path.insert(0, ROOT)

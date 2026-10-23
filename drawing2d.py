@@ -164,6 +164,7 @@ _GEOM = {
     "Hatches": ("hatch", "IHatch", []),
     "Beziers": ("bezier", "IBezier", ["Style"]),
     "Nurbses": ("nurbs", "INurbs", ["Style"]),
+    "MacroObjects": ("macro", "IMacroObject", []),  # условные обозначения из kompas_place_symbols
 }
 _SYMB = {
     "LineDimensions": ("linear_dim", "ILineDimension", ["X1", "Y1", "X2", "Y2", "X3", "Y3", "Orientation"]),

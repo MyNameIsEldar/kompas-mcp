@@ -1,6 +1,6 @@
 {
   "name": "kompas",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Работа с КОМПАС-3D из Claude Code: чертежи, фрагменты, детали, размеры, штамп, 3D-операции и просмотр результата картинкой.",
   "author": {
     "name": "Eldar Tagiev"

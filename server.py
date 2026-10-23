@@ -22,6 +22,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 import drawing2d
 import model3d
+import pneumo
 import winutil
 from kompas_com import DOC_TYPES, ComWorker, Kompas, KompasError, _kompas_exe
 
@@ -55,6 +56,10 @@ construction (вспомогательная, не печатается), thick 
 Радиус/диаметр ставьте с привязкой: {"type":"radius","object":<reference дуги>} — стрелка попадёт на дугу.
 Штамп: 1 наименование, 2 обозначение, 3 материал, 110 «Разраб.», 111 «Пров.», 9 организация.
 Не выдумывайте фамилии, обозначения и материалы — спросите пользователя.
+
+Технологические и пневмосхемы: условные обозначения ставьте через kompas_place_symbols (каталог —
+kompas_symbols_catalog; на A1 модуль 5 мм выбирается сам), трубы — kompas_pipes по координатам портов
+из ответа вставки. Поток слева направо; обратный клапан в такой линии — rotate=180.
 
 3D (kompas_3d_feature): первая операция mode="add" создаёт тело, далее add — приклеить, cut — вырезать.
 direction="normal" — вдоль нормали плоскости (для XOY это +Z). Для вращения в эскизе нужна ось style="axial".
@@ -372,6 +377,41 @@ async def kompas_3d_feature(
                                                           direction, angle, plane_offset, name), "3d feature", timeout=120))
 
 
+# --- Пневмосхемы: условные обозначения ---------------------------------------
+@mcp.tool()
+async def kompas_symbols_catalog(
+    unit: Annotated[float | None, Field(description="Модуль u, мм; без него — для листа A1 (5 мм)")] = None,
+) -> str:
+    """Каталог условных обозначений для пневмо- и технологических схем: имя, наименование, размер, порты."""
+    return _json({"unit_mm": unit or 5.0, "symbols": pneumo.catalog(unit or 5.0)})
+
+
+@mcp.tool()
+async def kompas_place_symbols(
+    items: Annotated[list[dict], Field(description=(
+        'Символы: {"symbol":"compressor","x":100,"y":300,"rotate":0,"mirror":false,"label":"К1",'
+        '"label_pos":"top|bottom|left|right|[dx,dy]","leads":0}. x,y — центр символа в мм; rotate — градусы '
+        '(против часовой); leads — длина выводов у портов, мм (для таблиц обозначений). Имена — в kompas_symbols_catalog.'))],
+    unit: Annotated[float | None, Field(description="Модуль u, мм; по умолчанию по формату листа (A1 — 5 мм)")] = None,
+    view: int | None = None,
+) -> str:
+    """Вставить условные обозначения (компрессоры, фильтры, клапаны, теплообменники…). Каждый символ — один
+    макрообъект. Возвращает reference, габарит и координаты портов для подключения трубопроводов."""
+    return _json(await com(lambda: pneumo.place(K(), items, view, unit), "place symbols"))
+
+
+@mcp.tool()
+async def kompas_pipes(
+    items: Annotated[list[dict], Field(description=(
+        'Линии связи: {"points":[[x1,y1],[x2,y2],...],"route":"hv|vh|null","kind":"main|control|thin",'
+        '"arrow":"end|start|both|null"}. route вставляет прямой угол между точками (hv — сначала по X). '
+        'kind=main — трубопровод (основная), control — линия управления (штриховая).'))],
+    view: int | None = None,
+) -> str:
+    """Провести трубопроводы и линии управления между портами символов (ортогонально, со стрелками потока)."""
+    return _json(await com(lambda: pneumo.pipes(K(), items, view), "pipes"))
+
+
 # --- Запасной путь -----------------------------------------------------------
 @mcp.tool()
 async def kompas_run_python(code: Annotated[str, Field(description=(
@@ -452,4 +492,8 @@ async def kompas_api_search(
 
 if __name__ == "__main__":
     print("kompas-mcp: запуск (stdio)", file=sys.stderr)
+    if os.environ.get("KOMPAS_MCP_DUMP_STACKS"):
+        # отладка зависаний: периодически печатать стеки всех потоков в stderr
+        import faulthandler
+        faulthandler.dump_traceback_later(float(os.environ["KOMPAS_MCP_DUMP_STACKS"]), repeat=True)
     mcp.run()

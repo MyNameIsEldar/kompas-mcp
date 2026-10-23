@@ -111,13 +111,22 @@ class ComWorker:
         afut = asyncio.wrap_future(fut)
         start = time.time()
         blocked_since: float | None = None
+        probe: asyncio.Future | None = None
         while True:
             done, _ = await asyncio.wait({afut}, timeout=1.0)
             if done:
                 return afut.result()
             now = time.time()
             if modal_check is not None:
-                desc = await asyncio.to_thread(modal_check)
+                # Проверка диалогов не должна блокировать ожидание результата: она идёт в фоне,
+                # ограничена по времени, и следующая не стартует, пока не закончилась предыдущая.
+                if probe is None:
+                    probe = asyncio.ensure_future(asyncio.to_thread(modal_check))
+                desc = None
+                done_probe, _ = await asyncio.wait({probe}, timeout=3.0)
+                if done_probe:
+                    desc = probe.result() if not probe.exception() else None
+                    probe = None
                 blocked_since = (blocked_since or now) if desc else None
                 if desc and now - blocked_since >= 1.0:
                     raise KompasBusy(
@@ -277,6 +286,13 @@ class Kompas:
         self.activate(d)
         t = d.DocumentType
         k5 = self.app5
+        # Только что созданные объекты остаются выделенными, и экспорт рисует их цветом выделения
+        # (синим) — снимаем выделение, чтобы картинка показывала настоящий вид чертежа.
+        try:
+            iface = self.API7.IKompasDocument2D1 if t in (1, 2) else self.API7.IKompasDocument3D
+            iface(d).SelectionManager.UnselectAll()
+        except Exception:  # noqa: BLE001 — не у всех типов документов есть менеджер выделения
+            pass
         if t in (1, 2):
             doc5 = k5.ActiveDocument2D()
         elif t in (4, 5):
