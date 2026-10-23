@@ -1,45 +1,70 @@
-# kompas — плагин Claude Code для КОМПАС-3D
+# kompas — КОМПАС-3D для Claude (Claude Code, Cowork, чат Claude Desktop)
 
 Claude работает с документами КОМПАС-3D через COM API: создаёт и правит чертежи, фрагменты и детали,
 ставит размеры, заполняет основную надпись и **сам смотрит на результат** — документ рендерится в картинку
 (временный файл удаляется сразу, на диске ничего не остаётся).
 
-Состав плагина:
-- MCP-сервер `kompas` (`server.py`) — инструменты `kompas_*`;
-- скилл `kompas` (`skills/kompas/SKILL.md`) — порядок работы, координаты листа, правила ЕСКД, работа с диалогами.
+Состав:
+- MCP-сервер `kompas` (`server.py`) — инструменты `kompas_*`; главные правила работы зашиты в его инструкции;
+- скилл `kompas` (`skills/kompas/SKILL.md`) — подробный порядок работы, координаты листа, ЕСКД, диалоги;
+- расширение Claude Desktop `dist/kompas.mcpb` — тот же сервер для обычных чатов (собирается скриптом).
 
 ## Требования
 
 - Windows, КОМПАС-3D (проверено на v25, в том числе учебной версии).
-- Python 3.10+ в `PATH` (команда `python`).
-- Зависимости: `pip install -r requirements.txt`
-
-## Установка
-
-С GitHub:
+- Python 3.10+ в `PATH` (команда `python`) с зависимостями:
 
 ```bash
 pip install mcp pywin32 pillow pydantic comtypes
+```
+
+## Где что работает
+
+Сервер общается с КОМПАСом на этом компьютере, поэтому нужен клиент, который запускает локальные MCP-серверы.
+
+| Где | Как подключить | Инструменты | Скилл |
+|---|---|---|---|
+| Claude Code (CLI, вкладка Code) | плагин из маркетплейса | да | да |
+| Cowork в Claude Desktop | плагин через Customize → Plugins | да (сессии на вашем компьютере) | да |
+| Обычный чат Claude Desktop | расширение `.mcpb` (+ плагин для скилла) | да | с плагином |
+| claude.ai в браузере, мобильное приложение | — | нет: туда локальный сервер не дотянуться | с плагином |
+
+### Claude Code
+
+```bash
 claude plugin marketplace add MyNameIsEldar/kompas-mcp
 claude plugin install kompas@kompas-local
 ```
 
-Из локальной копии репозитория:
+Перезапустите сессию. Проверка — «проверь подключение к КОМПАСу».
+
+### Cowork и аккаунт Claude (чат, Cowork, Claude Code)
+
+Claude Desktop → **Customize → Plugins → Add → Add marketplace** → `MyNameIsEldar/kompas-mcp` → установить
+плагин **kompas**. Плагин сохраняется в аккаунт: скилл работает в чате, Cowork и Claude Code, а MCP-сервер
+(«Runs in each session») — в Cowork и Claude Code. Если плагин уже установлен из CLI, в Claude Code
+удалите одну из копий, чтобы не было двух одинаковых серверов: `claude plugin uninstall kompas@kompas-local`.
+
+### Обычный чат Claude Desktop
 
 ```bash
-pip install -r requirements.txt
-claude plugin marketplace add <путь к папке kompas-mcp>
-claude plugin install kompas@kompas-local
+python scripts/build_mcpb.py
 ```
 
-После установки перезапустите сессию Claude Code. Проверка — попросите Claude: «проверь подключение к КОМПАСу».
+Откройте `dist/kompas.mcpb` двойным щелчком (или Claude Desktop → Settings → Extensions → Install extension)
+и нажмите «Установить». Инструменты `kompas_*` появятся в чатах.
 
-Обновление после правок кода:
+### Обновление после правок кода
+
+Поднимите `version` в `.claude-plugin/plugin.json`, затем:
 
 ```bash
 claude plugin marketplace update kompas-local
 claude plugin update kompas@kompas-local
+python scripts/build_mcpb.py
 ```
+
+Для аккаунта (Cowork) — запушьте изменения и нажмите **Check for updates** у маркетплейса в Customize → Plugins.
 
 ## Инструменты
 

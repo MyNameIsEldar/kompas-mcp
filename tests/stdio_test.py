@@ -18,7 +18,9 @@ def text_of(res) -> str:
 
 
 async def main():
-    params = StdioServerParameters(command=sys.executable, args=[os.path.join(ROOT, "server.py")],
+    # необязательный аргумент — другой server.py, например из распакованного .mcpb
+    server_py = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "server.py")
+    params = StdioServerParameters(command=sys.executable, args=[server_py],
                                    env={**os.environ, "PYTHONUTF8": "1"})
     async with stdio_client(params) as (r, w), ClientSession(r, w) as session:
         init = await session.initialize()

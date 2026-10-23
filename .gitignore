@@ -8,3 +8,6 @@ tests/out/
 # временные файлы КОМПАСа
 ~$*
 *.bak
+
+# сборка расширения Claude Desktop
+dist/
