@@ -54,7 +54,9 @@ INSTRUCTIONS = """\
 construction (вспомогательная, не печатается), thick — или номер.
 Дуги: a1, a2 в градусах, ccw=true — против часовой от a1 к a2; проверяйте по полю mid в kompas_list_objects.
 Радиус/диаметр ставьте с привязкой: {"type":"radius","object":<reference дуги>} — стрелка попадёт на дугу.
-Штамп: 1 наименование, 2 обозначение, 3 материал, 110 «Разраб.», 111 «Пров.», 9 организация.
+Штамп: 1 наименование, 2 обозначение, 3 материал, 5 масса, 6 масштаб, 40–42 литера, 9 организация,
+110 «Разраб.», 111 «Пров.», 114 «Н. контр.», 115 «Утв.». Шифр схемы в обозначении — по ГОСТ 2.701
+(вид + тип: П3 пневматическая принципиальная, Х3 газовая, С3 комбинированная).
 Не выдумывайте фамилии, обозначения и материалы — спросите пользователя.
 
 Технологические и пневмосхемы: условные обозначения ставьте через kompas_place_symbols (каталог —
@@ -166,20 +168,37 @@ async def kompas_activate(document: Annotated[str, Field(description="Индек
 
 @mcp.tool()
 async def kompas_save(path: Annotated[str | None, Field(description="Путь для «Сохранить как»; без него — сохранить на место")] = None,
-                      document: str | None = None) -> str:
+                      document: str | None = None,
+                      export: Annotated[list[str] | None, Field(
+                          description='Дополнительно выгрузить рядом в эти форматы, например ["pdf"]. '
+                                      'Путь документа при этом не меняется.')] = None) -> str:
     """Сохранить документ. Расширение пути определяет формат (.cdw, .frw, .m3d, .dxf, .pdf…)."""
+    def save_checked(call, target: str) -> str:
+        # Save/SaveAs в API7 возвращают None даже при успехе — судим по файлу на диске.
+        target = os.path.abspath(target)
+        before = os.path.getmtime(target) if os.path.exists(target) else None
+        call(target)
+        if not os.path.exists(target):
+            raise KompasError(f"КОМПАС не сохранил документ: файла {target} нет.")
+        if os.path.getmtime(target) == before:
+            raise KompasError(f"КОМПАС не перезаписал {target}: время изменения файла прежнее.")
+        return target
+
     def f():
         k = K()
         d = k.resolve_doc(document)
         if path:
-            ok = d.SaveAs(path)
+            saved = save_checked(d.SaveAs, path)
         elif d.PathName:
-            ok = d.Save()
+            saved = save_checked(lambda _: d.Save(), d.PathName)
         else:
             raise KompasError("Документ ещё не сохранялся — укажите path.")
-        if not ok:
-            raise KompasError("КОМПАС не сохранил документ.")
-        return k.doc_info(d)
+        info = k.doc_info(d)
+        info["saved"] = saved
+        if export:
+            base = os.path.splitext(d.PathName or saved)[0]
+            info["exported"] = [save_checked(d.SaveAs, f"{base}.{ext.lstrip('.').lower()}") for ext in export]
+        return info
     return _json(await com(f, "save", timeout=120))
 
 
