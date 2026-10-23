@@ -549,7 +549,6 @@ def place(k: Kompas, items: list[dict], view_number: int | None = None, unit: fl
     d = k.resolve_doc()
     if d.DocumentType not in (1, 2):
         raise KompasError("Символы вставляются в чертёж или фрагмент.")
-    k.activate(d)
     if view_number is not None:
         v = k.view(d, view_number)
         v.Current = True
@@ -656,7 +655,6 @@ def _route(pts: list[list[float]], route: str | None) -> list[tuple[float, float
 
 def pipes(k: Kompas, items: list[dict], view_number: int | None = None) -> list[dict]:
     d = k.resolve_doc()
-    k.activate(d)
     if view_number is not None:
         v = k.view(d, view_number)
         v.Current = True

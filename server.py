@@ -237,7 +237,8 @@ async def kompas_preview(
     def f():
         k = K()
         d = k.resolve_doc(document)
-        k.activate(d)
+        if d.DocumentType not in (1, 2):
+            k.activate(d)  # чертёж рендерится без переключения окна пользователя
         info: dict[str, Any] = {"document": d.Name}
         if d.DocumentType in (4, 5):
             info["orientations"] = model3d.set_projection(k, orientation or "")

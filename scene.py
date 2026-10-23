@@ -177,10 +177,26 @@ def _resolve_point(p: Any, xf: Xf, ports: dict) -> list[float]:
 
 
 # --- Сборка ------------------------------------------------------------------
-def plan(k: Kompas | None, sc: dict, unit: float) -> tuple[list[dict], Xf, dict]:
+_XF_TAG = "kompas-mcp transform "  # так transform раздела хранится в комментарии его слоя
+
+
+def _stored_xf(k: Kompas, v, secs: list[dict], rebuilt: list[str]) -> Xf | None:
+    """Transform, с которым уже нарисованы разделы, не входящие в пересборку."""
+    for s in secs:
+        if s["layer"] in rebuilt or "transform" in s:
+            continue
+        L = drawing2d.find_layer(k, v, s["layer"])
+        comment = (L.Comment or "") if L is not None else ""
+        if comment.startswith(_XF_TAG):
+            t = json.loads(comment[len(_XF_TAG):])
+            return Xf(float(t["scale"]), float(t["offset"][0]), float(t["offset"][1]))
+    return None
+
+
+def plan(k: Kompas | None, sc: dict, unit: float, gxf: Xf | None = None) -> tuple[list[dict], Xf, dict]:
     """Разделы, общий transform и порты всех символов сцены (координаты листа)."""
     secs = _sections(sc)
-    gxf = _make_xf(sc.get("transform"), [s for s in secs if "transform" not in s])
+    gxf = gxf or _make_xf(sc.get("transform"), [s for s in secs if "transform" not in s])
     ports: dict[str, dict] = {}
     for s in secs:
         xf = _make_xf(s["transform"], [s]) if "transform" in s else gxf
@@ -220,7 +236,13 @@ def build(k: Kompas, source: str | None = None, scene: dict | None = None, secti
 def _build(k: Kompas, sc: dict, path: str | None, sections: list[str] | None, clear: bool,
            view_number: int | None, dry_run: bool) -> dict:
     unit = float(sc.get("unit") or pneumo.default_unit(k)[0])
-    secs, gxf, ports = plan(k, sc, unit)
+    v = k.view(number=view_number)
+    stored = None
+    if sections and "fit" in (sc.get("transform") or {}):
+        # fit зависит от габарита всей сцены: при частичной пересборке берём масштаб, с которым
+        # нарисованы остальные разделы, иначе новые части не совпадут со старыми
+        stored = _stored_xf(k, v, _sections(sc), sections)
+    secs, gxf, ports = plan(k, sc, unit, stored)
     names = [s["layer"] for s in secs]
     if sections:
         unknown = [n for n in sections if n not in names]
@@ -228,6 +250,8 @@ def _build(k: Kompas, sc: dict, path: str | None, sections: list[str] | None, cl
             raise KompasError(f"Нет разделов {unknown}. В сцене: {names}.")
     todo = [s for s in secs if not sections or s["layer"] in sections]
     res: dict[str, Any] = {"source": path, "transform": gxf.as_dict(), "unit_mm": unit, "sections": []}
+    if stored is not None:
+        res["transform_note"] = "fit не пересчитан: взят transform уже нарисованных разделов"
     if dry_run:
         for s in todo:
             pts = [s["_xf"].pt(*p) for op in s.get("ops", []) if op.get("op") != "table" for p in _scene_points(op)]
@@ -236,7 +260,6 @@ def _build(k: Kompas, sc: dict, path: str | None, sections: list[str] | None, cl
             res["sections"].append({"layer": s["layer"], "bbox_sheet_mm": bbox})
         res["ports"] = ports
         return res
-    v = k.view(number=view_number)
     warnings: list[str] = []
     for s in todo:
         layer, xf = s["layer"], s["_xf"]
@@ -278,6 +301,9 @@ def _build(k: Kompas, sc: dict, path: str | None, sections: list[str] | None, cl
                 raise KompasError(f"Раздел «{layer}», операция #{i} ({kind}): {e}") from e
             counts[kind] = counts.get(kind, 0) + len(items)
         rep["built"] = counts
+        L = drawing2d.find_layer(k, v, layer, create=True)
+        L.Comment = _XF_TAG + json.dumps(xf.as_dict())
+        L.Update()
         res["sections"].append(rep)
     if sc.get("stamp") and not sections:
         drawing2d.stamp(k, sc["stamp"])

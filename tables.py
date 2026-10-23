@@ -129,12 +129,17 @@ def _cell_text(k, dc, s: str, x0: float, x1: float, y_top: float, row_h: float, 
     block = h + step * (n - 1)
     y = y_top - row_h / 2 + block / 2 - h
     x = {"left": x0 + PAD, "center": (x0 + x1) / 2, "right": x1 - PAD}[align]
-    o, warn = drawing2d.make_text(k, dc, {"x": x, "y": y, "text": lines, "height": h, "align": align,
-                                          "line_step": step or None, "max_width": x1 - x0 - 2 * PAD,
-                                          "fix_glyphs": fix_glyphs})
-    drawing2d._to_layer(o, layer_no)
-    warnings += warn
-    created.append(o.Reference)
+    # каждая строка — отдельная надпись: у многострочного текста КОМПАС не даёт шаг меньше ~1.4 высоты,
+    # и три строки головки не помещаются в 15 мм
+    for i, line in enumerate(lines):
+        if not line:
+            continue
+        o, warn = drawing2d.make_text(k, dc, {"x": x, "y": y - i * step, "text": line, "height": h,
+                                              "align": align, "max_width": x1 - x0 - 2 * PAD,
+                                              "fix_glyphs": fix_glyphs})
+        drawing2d._to_layer(o, layer_no)
+        warnings += warn
+        created.append(o.Reference)
 
 
 def _line(dc, x1, y1, x2, y2, style, layer_no, created):
