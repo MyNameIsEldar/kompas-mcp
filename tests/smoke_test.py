@@ -39,6 +39,34 @@ async def call(name, **args):
     return out
 
 
+class TempDrawing:
+    """Новый чертёж, сохранённый во временную папку под уникальным именем. В КОМПАСе могут быть открыты
+    документы пользователя и других сеансов, поэтому перед каждым рисующим вызовом документ активируется
+    по имени, а предпросмотр берётся явно по имени."""
+
+    def __init__(self, stem, sheet_format="A1", vertical=False):
+        self.stem, self.fmt, self.vertical = stem, sheet_format, vertical
+        self.name = None
+
+    async def create(self):
+        import tempfile
+        import time
+        await call("kompas_new", doc_type="drawing", sheet_format=self.fmt, vertical=self.vertical)
+        path = os.path.join(tempfile.gettempdir(), f"{self.stem}_{int(time.time())}.cdw")
+        await call("kompas_save", path=path)
+        self.name = os.path.basename(path)
+        return self
+
+    async def call(self, tool, **args):
+        if tool == "kompas_preview":
+            return await call(tool, document=self.name, **args)
+        await call("kompas_activate", document=self.name)
+        return await call(tool, **args)
+
+    async def close(self):
+        await call("kompas_close", document=self.name)
+
+
 async def t_status():
     await call("kompas_status")
 

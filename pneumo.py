@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import inspect
 import math
 from dataclasses import dataclass, field
 from typing import Callable
@@ -70,8 +71,10 @@ class Sym:
         else:
             self.poly(tri, closed=True)
 
-    def text(self, x, y, s, h=1.0):
-        self.items.append(("text", [(x, y)], s, h))
+    def text(self, x, y, s, h=1.0, narrow=1.0, anchor=None):
+        """Горизонтальный текст: по центру в (x, y) или, если задан anchor (dx, dy), — вплотную за точкой
+        в этом направлении (направление поворачивается вместе с символом, сам текст — нет)."""
+        self.items.append(("text", [(x, y)], s, h, narrow, anchor))
 
     def port(self, name, x, y, dx, dy):
         self.ports[name] = Port(x, y, dx, dy)
@@ -300,20 +303,221 @@ def control_valve_3way(s: Sym):
 
 
 def check_valve(s: Sym):
-    # поток — от светлого треугольника к закрашенному, по стрелке (на таблице и примерах — справа налево)
+    # поток — от светлого треугольника к закрашенному, по стрелке (на таблице и примерах — справа налево);
+    # стрелка над корпусом, чтобы не выходить за габарит клапана
     _valve_body(s, filled_left=True)
-    s.arrow(-2, 0, -4, 0, head=0.8, width=0.55)
+    s.arrow(1.4, 1.5, -1.4, 1.5, head=0.7, width=0.45)
     s.ports.clear()
     s.port("in", 2, 0, 1, 0)
-    s.port("out", -4, 0, -1, 0)
+    s.port("out", -2, 0, -1, 0)
 
 
 def check_valve_angle(s: Sym):
     _valve_body(s, right=False, bottom=True, filled_left=True)
-    s.arrow(-2, 0, -4, 0, head=0.8, width=0.55)
+    s.arrow(0.9, 1.5, -1.6, 1.5, head=0.7, width=0.45)
     s.ports.clear()
     s.port("in", 0, -2, 0, -1)
-    s.port("out", -4, 0, -1, 0)
+    s.port("out", -2, 0, -1, 0)
+
+
+def _stem(s: Sym, y1):
+    s.line(0, 0, 0, y1)
+
+
+def valve_electric(s: Sym):
+    """Запорный клапан с электроприводом: круг с буквой М над корпусом."""
+    _valve_body(s)
+    _stem(s, 1.4)
+    s.circle(0, 2.3, 0.9)
+    s.text(0, 2.3, "М", h=0.9)
+    s.port("ctrl", 0, 3.2, 0, 1)
+
+
+def valve_solenoid(s: Sym):
+    """Запорный клапан с электромагнитным приводом: квадрат с буквой Э."""
+    _valve_body(s)
+    _stem(s, 1.4)
+    s.poly([(-0.85, 1.4), (-0.85, 3.1), (0.85, 3.1), (0.85, 1.4)], closed=True)
+    s.text(0, 2.25, "Э", h=0.9)
+    s.port("ctrl", 0, 3.1, 0, 1)
+
+
+def valve_diaphragm(s: Sym):
+    """Клапан с мембранным (пневматическим) приводом: полукруг мембраны над корпусом."""
+    _valve_body(s)
+    _stem(s, 1.5)
+    s.line(-1.2, 1.5, 1.2, 1.5)
+    s.arc(0, 1.5, 1.2, 0, 180, ccw=True)
+    s.port("ctrl", 0, 2.7, 0, 1)
+
+
+def thermostat_3way(s: Sym):
+    """Трёхходовой терморегулятор: трёхходовой клапан с термосиловым приводом (мембрана, капилляр,
+    термобаллон). Порт sense — конец термобаллона, к нему подводят линию от точки измерения."""
+    _valve_body(s, bottom=True)
+    _stem(s, 1.4)
+    s.line(-1.1, 1.4, 1.1, 1.4)
+    s.arc(0, 1.4, 1.1, 0, 180, ccw=True)
+    s.line(0.78, 2.18, 2.0, 2.18, style=THIN)  # капилляр
+    s.fill([(2.0, 1.88), (2.9, 1.88), (2.9, 2.48), (2.0, 2.48)])  # термобаллон
+    s.port("sense", 2.9, 2.18, 1, 0)
+
+
+def _level(s: Sym, y, x0, x1, xm):
+    """Уровень жидкости: тонкая линия и треугольник ▽ над ней."""
+    s.line(x0, y, x1, y, style=THIN)
+    s.poly([(xm, y), (xm - 0.35, y + 0.55), (xm + 0.35, y + 0.55)], closed=True, style=THIN)
+
+
+def _vessel_v(s: Sym, r=1.8, h=3.0, level=-1.6):
+    s.line(-r, -h, -r, h)
+    s.line(r, -h, r, h)
+    s.arc(0, h, r, 0, 180, ccw=True)
+    s.arc(0, -h, r, 180, 360, ccw=True)
+    if level is not None:
+        _level(s, level, -r, r, r - 0.7)
+    s.port("in", -r, 1.4, -1, 0)
+    s.port("out", 0, h + r, 0, 1)
+    s.port("drain", 0, -h - r, 0, -1)
+    s.port("side", r, 1.4, 1, 0)
+
+
+def separator(s: Sym):
+    """Сепаратор (газожидкостный) — вертикальный сосуд с уровнем жидкости."""
+    _vessel_v(s)
+
+
+def oil_separator(s: Sym):
+    """Маслоотделитель: вертикальный сосуд, входной патрубок опущен внутрь, уровень масла."""
+    _vessel_v(s)
+    s.poly([(-1.8, 1.4), (-0.6, 1.4), (-0.6, 0.0)])
+
+
+def filter_separator(s: Sym):
+    """Фильтр-сепаратор: вертикальный сосуд с фильтрующим элементом (штриховой) и уровнем жидкости."""
+    _vessel_v(s)
+    s.poly([(-1.0, 0.0), (-1.0, 3.2), (1.0, 3.2), (1.0, 0.0)], closed=True, style=THIN)
+    s.line(-1.0, 0.0, 1.0, 3.2, style=DASHED)
+    s.line(-1.0, 3.2, 1.0, 0.0, style=DASHED)
+
+
+def tank_horizontal(s: Sym):
+    """Горизонтальная ёмкость с эллиптическими (сферическими) днищами и уровнем жидкости."""
+    r, h, lv = 1.6, 3.0, -0.6
+    s.line(-h, r, h, r)
+    s.line(-h, -r, h, -r)
+    s.arc(-h, 0, r, 90, 270, ccw=True)
+    s.arc(h, 0, r, 270, 90, ccw=True)
+    dx = math.sqrt(r * r - lv * lv)
+    _level(s, lv, -h - dx, h + dx, h - 0.4)
+    s.port("in", -2.0, r, 0, 1)
+    s.port("top", 1.0, r, 0, 1)
+    s.port("out", 2.0, -r, 0, -1)
+    s.port("drain", -2.0, -r, 0, -1)
+    s.port("left", -h - r, 0, -1, 0)
+    s.port("right", h + r, 0, 1, 0)
+
+
+def motor(s: Sym):
+    """Электродвигатель — круг с буквой М; shaft — выход вала (вправо)."""
+    s.circle(0, 0, 1.6)
+    s.text(0, 0, "М", h=1.3)
+    s.port("shaft", 1.6, 0, 1, 0)
+    s.port("left", -1.6, 0, -1, 0)
+    s.port("top", 0, 1.6, 0, 1)
+    s.port("bottom", 0, -1.6, 0, -1)
+
+
+def air_cooler(s: Sym):
+    """Аппарат воздушного охлаждения (АВО): трубный пучок, под ним вентилятор с электродвигателем,
+    стрелки — поток воздуха вверх."""
+    s.poly([(-3, 0.2), (-3, 1.8), (3, 1.8), (3, 0.2)], closed=True)
+    s.poly([(-3, 1.0), (-2.2, 1.0), (-1.7, 1.5), (-0.6, 0.5), (0.6, 1.5), (1.7, 0.5), (2.2, 1.0), (3, 1.0)])
+    for x in (-1.8, 1.8):
+        s.arrow(x, 2.0, x, 3.0, head=0.6, width=0.4)
+    # вентилятор — две лопасти, вал, двигатель
+    s.poly([(0, -0.7), (-1.9, -0.3), (-1.9, -1.1)], closed=True)
+    s.poly([(0, -0.7), (1.9, -0.3), (1.9, -1.1)], closed=True)
+    s.line(0, -0.7, 0, -1.9)
+    s.circle(0, -2.8, 0.9)
+    s.text(0, -2.8, "М", h=0.9)
+    s.port("in", -3, 1.0, -1, 0)
+    s.port("out", 3, 1.0, 1, 0)
+
+
+def heater_electric(s: Sym):
+    """Электронагреватель: корпус с нагревательным элементом (зигзаг) и выводами питания сверху."""
+    s.poly([(-2.5, -1.5), (-2.5, 1.5), (2.5, 1.5), (2.5, -1.5)], closed=True)
+    s.poly([(-1.8, 0), (-1.5, 0.7), (-0.9, -0.7), (-0.3, 0.7), (0.3, -0.7), (0.9, 0.7), (1.5, -0.7), (1.8, 0)])
+    for x in (-0.8, 0.8):
+        s.line(x, 1.5, x, 2.4, style=THIN)
+        s.circle(x, 2.6, 0.2, style=THIN)
+    s.port("in", -2.5, 0, -1, 0)
+    s.port("out", 2.5, 0, 1, 0)
+
+
+def line_break(s: Sym, text: str = "в Е-1", incoming: bool = False):
+    """Обрыв линии с адресом: короткая линия со стрелкой и надпись за ней («в Е-1», «на свечу»,
+    «на факел», «из К-1»). incoming=true — стрелка к порту (поток приходит с другого листа/установки)."""
+    if incoming:
+        s.arrow(0, 0, -2, 0, head=0.8, width=0.5)
+    else:
+        s.arrow(-2, 0, 0, 0, head=0.8, width=0.5)
+    s.text(0.4, 0, str(text), h=1.0, anchor=(1, 0))
+    s.port("in", -2, 0, -1, 0)
+
+
+_KIP_R = 1.0  # прибор по ГОСТ 21.208 — окружность Ø10 мм на A1 (u = 5 мм)
+_GLYPH = 0.62  # ширина заглавной буквы / цифры с промежутком в долях высоты шрифта
+
+
+def _fit_text(s: str, h_max: float, width_at) -> tuple[float, float]:
+    """Высота и сужение, при которых строка помещается в ширину width_at(h) (ширина зависит от высоты —
+    хорда круга). Шрифт сужается до 0.75, дальше уменьшается высота."""
+    n = max(len(s), 1)
+    h = h_max
+    while h > 0.15:
+        avail = width_at(h)
+        if avail > 0:
+            k = avail / (_GLYPH * h * n)
+            if k >= 0.75:
+                return h, round(min(k, 1.0), 3)
+        h -= 0.02
+    return 0.15, 0.75
+
+
+def instrument(s: Sym, code: str = "PI", position: str = "", panel: bool = False, marks=None):
+    """Прибор КИП по ГОСТ 21.208: окружность, сверху — буквенный код (PT, TIC, PDIA…), снизу — номер
+    позиции; panel=true — горизонтальная черта (прибор на щите); marks — метки предельных значений справа
+    (["H","L"], "H" и т. п.). Текст подбирается по высоте и сужению так, чтобы поместиться в круг."""
+    r = _KIP_R
+    s.circle(0, 0, r)
+    if panel:
+        s.line(-r, 0, r, 0)
+    gap, margin = 0.1, 0.12
+    chord = lambda y: 2 * math.sqrt(max(r * r - y * y, 0)) - 2 * margin  # noqa: E731
+    code, position = str(code or ""), str(position or "")
+    if code:
+        h, k = _fit_text(code, 0.55 if position or panel else 0.7,
+                         lambda h: chord(gap + h) if position or panel else chord(h / 2))
+        y = gap + h / 2 if position or panel else 0
+        s.text(0, y, code, h=h, narrow=k)
+    if position:
+        h, k = _fit_text(position, 0.5, lambda h: chord(gap + h))
+        s.text(0, -gap - h / 2, position, h=h, narrow=k)
+    if marks:
+        marks = [marks] if isinstance(marks, str) else [str(m) for m in marks]
+        if len(marks) == 1:
+            slots = [(marks[0], -0.5 if marks[0].upper().startswith("L") else 0.5)]
+        else:
+            slots = [(marks[0], 0.5), (marks[1], -0.5)]
+        for m, y in slots[:2]:
+            x = math.sqrt(r * r - y * y) + 0.15
+            s.text(x, y, m, h=0.5, anchor=(1, 0))
+    s.port("bottom", 0, -r, 0, -1)
+    s.port("top", 0, r, 0, 1)
+    s.port("left", -r, 0, -1, 0)
+    s.port("right", r, 0, 1, 0)
 
 
 def safety_valve(s: Sym):
@@ -459,15 +663,47 @@ CATALOG: dict[str, tuple[Callable[[Sym], None], str, str]] = {
     "consumer": (consumer, "Потребитель сжатого воздуха «П» (как на примерах схем)", "—"),
     "drain": (drain, "Слив конденсата (как на примерах схем)", "—"),
     "junction": (junction, "Узел соединения трубопроводов", "—"),
+    "valve_electric": (valve_electric, "Клапан (задвижка) с электроприводом «М»", "—"),
+    "valve_solenoid": (valve_solenoid, "Клапан с электромагнитным приводом «Э»", "—"),
+    "valve_diaphragm": (valve_diaphragm, "Клапан с мембранным приводом", "—"),
+    "thermostat_3way": (thermostat_3way, "Терморегулятор трёхходовой (термосиловой привод)", "—"),
+    "separator": (separator, "Сепаратор вертикальный с уровнем жидкости", "—"),
+    "oil_separator": (oil_separator, "Маслоотделитель вертикальный с уровнем масла", "—"),
+    "filter_separator": (filter_separator, "Фильтр-сепаратор вертикальный", "—"),
+    "tank_horizontal": (tank_horizontal, "Ёмкость горизонтальная с уровнем жидкости", "—"),
+    "motor": (motor, "Электродвигатель «М»", "—"),
+    "air_cooler": (air_cooler, "Аппарат воздушного охлаждения (АВО) с вентилятором и двигателем", "—"),
+    "heater_electric": (heater_electric, "Электронагреватель", "—"),
+    "line_break": (line_break, "Обрыв линии с адресом (параметр text: «в Е-1», «на свечу», «на факел»)", "—"),
+    "instrument": (instrument, "Прибор КИП по ГОСТ 21.208 (параметры code, position, panel, marks)", "—"),
 }
 
+# параметры символов, которые можно передать в элементе kompas_place_symbols
+SYMBOL_PARAMS = ("text", "incoming", "code", "position", "panel", "marks")
 
-def build(name: str) -> Sym:
+
+def _params_of(fn) -> dict:
+    return {p.name: p.default for p in list(inspect.signature(fn).parameters.values())[1:]}
+
+
+def build(name: str, params: dict | None = None) -> Sym:
     if name not in CATALOG:
         raise KompasError(f"Неизвестный символ «{name}». Список: kompas_symbols_catalog.")
+    fn = CATALOG[name][0]
+    params = params or {}
+    extra = set(params) - set(_params_of(fn))
+    if extra:
+        raise KompasError(f"У символа «{name}» нет параметров: {', '.join(sorted(extra))}.")
     s = Sym()
-    CATALOG[name][0](s)
+    fn(s, **params)
     return s
+
+
+def _text_box(x, y, s, h, narrow, anchor) -> tuple[float, float, float, float]:
+    w = _text_width(s, h) * narrow
+    if anchor:
+        x, y = x + anchor[0] * w / 2, y + anchor[1] * h / 2
+    return x - w / 2, y - h / 2, x + w / 2, y + h / 2
 
 
 def _bbox(s: Sym) -> tuple[float, float, float, float]:
@@ -479,9 +715,9 @@ def _bbox(s: Sym) -> tuple[float, float, float, float]:
             xs += [xc - r, xc + r]
             ys += [yc - r, yc + r]
         elif kind == "text":
-            (x, y), h = it[1][0], it[3]
-            xs += [x - h, x + h]
-            ys += [y - h, y + h]
+            x0, y0, x1, y1 = _text_box(*it[1][0], *it[2:])
+            xs += [x0, x1]
+            ys += [y0, y1]
         else:
             for x, y in it[1]:
                 xs.append(x)
@@ -491,15 +727,18 @@ def _bbox(s: Sym) -> tuple[float, float, float, float]:
 
 def catalog(unit: float = 5.0) -> list[dict]:
     out = []
-    for name, (_, title, pos) in CATALOG.items():
+    for name, (fn, title, pos) in CATALOG.items():
         s = build(name)
         x0, y0, x1, y1 = _bbox(s)
-        out.append({
+        entry = {
             "symbol": name, "title": title, "table_no": pos,
             "size_mm": [round((x1 - x0) * unit, 1), round((y1 - y0) * unit, 1)],
             "ports": {k: {"at_mm": [round(p.x * unit, 2), round(p.y * unit, 2)], "dir": [p.dx, p.dy]}
                       for k, p in s.ports.items()},
-        })
+        }
+        if _params_of(fn):
+            entry["params"] = _params_of(fn)
+        out.append(entry)
     return out
 
 
@@ -560,7 +799,7 @@ def place(k: Kompas, items: list[dict], view_number: int | None = None, unit: fl
     results = []
     for n, it in enumerate(items):
         name = it.get("symbol")
-        s = build(name)
+        s = build(name, {p: it[p] for p in SYMBOL_PARAMS if p in it})
         if "x" not in it or "y" not in it:
             raise KompasError(f"Символ #{n} ({name}): нужны x и y — центр символа, мм.")
         u = float(it.get("unit", u0))
@@ -590,9 +829,12 @@ def place(k: Kompas, items: list[dict], view_number: int | None = None, unit: fl
                     doc5.ksLineSeg(*a, *b, MAIN)
                 doc5.ksEndObj()
             elif kind == "text":
+                _, _, text, h, narrow, anchor = el
                 x, y = xf.pt(*el[1][0])
-                h = el[3] * u
-                doc5.ksText(x - _text_width(el[2], h) / 2, y - h / 2, 0, h, 1, 0, el[2])
+                if anchor:
+                    anchor = xf.vec(*anchor)
+                x0, y0, _, _ = _text_box(x, y, text, h * u, narrow, anchor)
+                doc5.ksText(x0, y0, 0, h * u, narrow, 0, text)
         ports = {}
         for pname, p in s.ports.items():
             px, py = xf.pt(p.x, p.y)

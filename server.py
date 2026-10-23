@@ -391,7 +391,9 @@ async def kompas_place_symbols(
     items: Annotated[list[dict], Field(description=(
         'Символы: {"symbol":"compressor","x":100,"y":300,"rotate":0,"mirror":false,"label":"К1",'
         '"label_pos":"top|bottom|left|right|[dx,dy]","leads":0}. x,y — центр символа в мм; rotate — градусы '
-        '(против часовой); leads — длина выводов у портов, мм (для таблиц обозначений). Имена — в kompas_symbols_catalog.'))],
+        '(против часовой); leads — длина выводов у портов, мм (для таблиц обозначений). Имена — в kompas_symbols_catalog. '
+        'Параметры символов (список — поле params в каталоге): line_break — "text":"на факел","incoming":false; '
+        'instrument (прибор КИП) — "code":"PT","position":"101","panel":true,"marks":["H","L"].'))],
     unit: Annotated[float | None, Field(description="Модуль u, мм; по умолчанию по формату листа (A1 — 5 мм)")] = None,
     view: int | None = None,
 ) -> str:
