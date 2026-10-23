@@ -1,0 +1,5 @@
+mcp>=2.3,<3
+pywin32>=306
+pillow>=10
+pydantic>=2
+comtypes>=1.4
